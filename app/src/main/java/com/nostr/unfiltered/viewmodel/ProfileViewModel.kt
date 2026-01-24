@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
+import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
@@ -22,7 +23,8 @@ import javax.inject.Inject
 class ProfileViewModel @Inject constructor(
     private val nostrClient: NostrClient,
     private val keyManager: KeyManager,
-    private val feedRepository: FeedRepository
+    private val feedRepository: FeedRepository,
+    private val searchService: SearchService
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfileUiState())
@@ -76,8 +78,9 @@ class ProfileViewModel @Inject constructor(
                             )
                             _uiState.update { it.copy(metadata = metadata, isLoading = false) }
                         }
-                        20 -> {
-                            // Photo post
+                        1, 20 -> {
+                            // Kind 1 (note) or Kind 20 (picture post)
+                            // Try to parse as photo post - will extract image URL if present
                             val post = feedRepository.parsePhotoPost(event)
                             if (post != null) {
                                 _uiState.update { state ->
@@ -101,19 +104,76 @@ class ProfileViewModel @Inject constructor(
         feedRepository.getUserMetadata(pubkey)?.let { metadata ->
             _uiState.update { it.copy(metadata = metadata, isLoading = false) }
         }
+
+        // Load cached posts by this author
+        val cachedPosts = feedRepository.getPostsByAuthor(pubkey)
+        if (cachedPosts.isNotEmpty()) {
+            _uiState.update { it.copy(posts = cachedPosts) }
+        }
+
+        // Directly fetch posts from relays (most reliable method)
+        viewModelScope.launch {
+            try {
+                val fetchedPosts = searchService.fetchUserPosts(pubkey)
+                if (fetchedPosts.isNotEmpty()) {
+                    _uiState.update { state ->
+                        val existingIds = state.posts.map { it.id }.toSet()
+                        val newPosts = fetchedPosts.filter { it.id !in existingIds }
+                        state.copy(
+                            posts = (state.posts + newPosts).sortedByDescending { it.createdAt },
+                            isLoading = false
+                        )
+                    }
+                } else {
+                    _uiState.update { it.copy(isLoading = false) }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+
+        // Also observe FeedRepository's posts flow for this author
+        // This catches posts added by any subscription
+        viewModelScope.launch {
+            feedRepository.posts.collect { allPosts ->
+                val authorPosts = allPosts.filter { it.authorPubkey == pubkey }
+                if (authorPosts.isNotEmpty()) {
+                    _uiState.update { state ->
+                        // Merge with existing posts, avoiding duplicates
+                        val existingIds = state.posts.map { it.id }.toSet()
+                        val newPosts = authorPosts.filter { it.id !in existingIds }
+                        if (newPosts.isNotEmpty()) {
+                            state.copy(
+                                posts = (state.posts + newPosts).sortedByDescending { it.createdAt }
+                            )
+                        } else {
+                            state
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun subscribeToUserPosts(pubkey: String) {
         try {
             val pk = PublicKey.fromHex(pubkey)
 
-            // Subscribe to user's kind 20 posts
-            val filter = Filter()
+            // Subscribe to user's kind 20 picture posts
+            val pictureFilter = Filter()
                 .kind(Kind(20u))
                 .author(pk)
                 .limit(50u)
 
-            nostrClient.subscribe("profile_posts_$pubkey", listOf(filter))
+            nostrClient.subscribe("profile_posts_$pubkey", listOf(pictureFilter))
+
+            // Also subscribe to kind 1 notes (may contain images)
+            val notesFilter = Filter()
+                .kind(Kind(1u))
+                .author(pk)
+                .limit(50u)
+
+            nostrClient.subscribe("profile_notes_$pubkey", listOf(notesFilter))
 
             // Also get their metadata
             val metadataFilter = Filter()
@@ -134,13 +194,10 @@ class ProfileViewModel @Inject constructor(
 
         viewModelScope.launch {
             if (_uiState.value.isFollowing) {
-                // Unfollow - would need to implement in repository
-                _uiState.update { it.copy(isFollowing = false) }
+                feedRepository.unfollowUser(pubkey)
             } else {
-                // Follow - would need to implement in repository
-                _uiState.update { it.copy(isFollowing = true) }
+                feedRepository.followUser(pubkey)
             }
-            // TODO: Publish updated contact list (kind 3)
         }
     }
 
@@ -148,6 +205,7 @@ class ProfileViewModel @Inject constructor(
         super.onCleared()
         currentPubkey?.let { pubkey ->
             nostrClient.unsubscribe("profile_posts_$pubkey")
+            nostrClient.unsubscribe("profile_notes_$pubkey")
             nostrClient.unsubscribe("profile_metadata_$pubkey")
         }
     }

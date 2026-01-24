@@ -22,8 +22,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.nostr.unfiltered.ui.screens.auth.AuthScreen
+import com.nostr.unfiltered.ui.screens.createpost.CreatePostScreen
 import com.nostr.unfiltered.ui.screens.feed.FeedScreen
 import com.nostr.unfiltered.ui.screens.profile.ProfileScreen
+import com.nostr.unfiltered.ui.screens.search.SearchScreen
 import com.nostr.unfiltered.viewmodel.AuthViewModel
 
 sealed class Screen(val route: String) {
@@ -89,11 +91,19 @@ fun UnfilteredNavGraph(
         }
 
         composable(Screen.Search.route) {
-            PlaceholderScreen(title = "Search", onBackClick = { navController.popBackStack() })
+            SearchScreen(
+                onBackClick = { navController.popBackStack() },
+                onUserClick = { pubkey ->
+                    navController.navigate(Screen.Profile.createRoute(pubkey))
+                }
+            )
         }
 
         composable(Screen.CreatePost.route) {
-            PlaceholderScreen(title = "Create Post", onBackClick = { navController.popBackStack() })
+            CreatePostScreen(
+                onBackClick = { navController.popBackStack() },
+                onPostSuccess = { navController.popBackStack() }
+            )
         }
 
         composable(Screen.Settings.route) {

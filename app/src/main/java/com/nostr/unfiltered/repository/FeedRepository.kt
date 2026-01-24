@@ -317,6 +317,12 @@ class FeedRepository @Inject constructor(
         return userMetadataCache[pubkey]
     }
 
+    fun getPostsByAuthor(pubkey: String): List<PhotoPost> {
+        return postsCache.values
+            .filter { it.authorPubkey == pubkey }
+            .sortedByDescending { it.createdAt }
+    }
+
     // ==================== Actions ====================
 
     fun likePost(post: PhotoPost) {
@@ -349,6 +355,66 @@ class FeedRepository @Inject constructor(
     fun clearCache() {
         postsCache.clear()
         _posts.value = emptyList()
+    }
+
+    // ==================== Follow/Unfollow ====================
+
+    private var lastContactListCreatedAt: Long = 0
+
+    fun followUser(pubkey: String) {
+        val keys = keyManager.getKeys() ?: return
+
+        scope.launch {
+            try {
+                val currentFollows = _followList.value.toMutableSet()
+                currentFollows.add(pubkey)
+
+                publishContactList(keys, currentFollows)
+
+                // Optimistically update
+                _followList.value = currentFollows
+            } catch (e: Exception) {
+                // Handle error
+            }
+        }
+    }
+
+    fun unfollowUser(pubkey: String) {
+        val keys = keyManager.getKeys() ?: return
+
+        scope.launch {
+            try {
+                val currentFollows = _followList.value.toMutableSet()
+                currentFollows.remove(pubkey)
+
+                publishContactList(keys, currentFollows)
+
+                // Optimistically update
+                _followList.value = currentFollows
+            } catch (e: Exception) {
+                // Handle error
+            }
+        }
+    }
+
+    private fun publishContactList(keys: rust.nostr.protocol.Keys, follows: Set<String>) {
+        val tags = follows.mapNotNull { pubkey ->
+            try {
+                Tag.parse(listOf("p", pubkey))
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        val event = EventBuilder(Kind(3u), "", tags)
+            .toEvent(keys)
+
+        nostrClient.publish(event)
+        lastContactListCreatedAt = System.currentTimeMillis() / 1000
+    }
+
+    fun isFollowing(pubkey: String): Boolean {
+        return _followList.value.contains(pubkey)
     }
 
     // ==================== Helpers ====================
