@@ -1,0 +1,7 @@
+.claude
+thoughts/
+build/
+app/build/
+.gradle/
+local.properties
+.idea/
