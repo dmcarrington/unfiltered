@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -37,7 +38,9 @@ fun PhotoCard(
     post: PhotoPost,
     onProfileClick: () -> Unit,
     onLikeClick: () -> Unit,
+    onZapClick: () -> Unit = {},
     onImageClick: () -> Unit = {},
+    showZapButton: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -143,7 +146,16 @@ fun PhotoCard(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // Could add zap button here in Phase 4
+                // Zap button
+                if (showZapButton) {
+                    IconButton(onClick = onZapClick) {
+                        Icon(
+                            imageVector = Icons.Filled.Bolt,
+                            contentDescription = "Zap",
+                            tint = Color(0xFFFFD700) // Gold/Lightning color
+                        )
+                    }
+                }
             }
 
             // Caption

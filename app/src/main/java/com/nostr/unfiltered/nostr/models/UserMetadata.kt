@@ -28,6 +28,23 @@ data class UserMetadata(
             pubkey
         }
 
+    /**
+     * Convert metadata to JSON string for publishing as kind 0 event content
+     */
+    fun toJson(): String {
+        val obj = JSONObject()
+        name?.let { obj.put("name", it) }
+        displayName?.let { obj.put("display_name", it) }
+        about?.let { obj.put("about", it) }
+        picture?.let { obj.put("picture", it) }
+        banner?.let { obj.put("banner", it) }
+        nip05?.let { obj.put("nip05", it) }
+        lud16?.let { obj.put("lud16", it) }
+        lud06?.let { obj.put("lud06", it) }
+        website?.let { obj.put("website", it) }
+        return obj.toString()
+    }
+
     companion object {
         fun fromJson(pubkey: String, json: String, createdAt: Long): UserMetadata {
             return try {

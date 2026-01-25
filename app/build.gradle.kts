@@ -77,8 +77,8 @@ dependencies {
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.8.5")
 
-    // rust-nostr
-    implementation("org.rust-nostr:nostr:0.35.0")
+    // rust-nostr SDK (includes protocol)
+    implementation("org.rust-nostr:nostr-sdk:0.35.0")
     implementation("net.java.dev.jna:jna:5.14.0@aar")
 
     // Hilt dependency injection

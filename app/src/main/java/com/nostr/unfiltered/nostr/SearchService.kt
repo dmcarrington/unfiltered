@@ -360,6 +360,7 @@ class SearchService @Inject constructor() {
             authorName = null,
             authorAvatar = null,
             authorNip05 = null,
+            authorLud16 = null,
             relativeTime = formatRelativeTime(createdAt)
         )
     }

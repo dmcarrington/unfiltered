@@ -24,8 +24,10 @@ import androidx.navigation.navArgument
 import com.nostr.unfiltered.ui.screens.auth.AuthScreen
 import com.nostr.unfiltered.ui.screens.createpost.CreatePostScreen
 import com.nostr.unfiltered.ui.screens.feed.FeedScreen
+import com.nostr.unfiltered.ui.screens.profile.ProfileEditScreen
 import com.nostr.unfiltered.ui.screens.profile.ProfileScreen
 import com.nostr.unfiltered.ui.screens.search.SearchScreen
+import com.nostr.unfiltered.ui.screens.settings.SettingsScreen
 import com.nostr.unfiltered.viewmodel.AuthViewModel
 
 sealed class Screen(val route: String) {
@@ -37,6 +39,7 @@ sealed class Screen(val route: String) {
     object Search : Screen("search")
     object CreatePost : Screen("create_post")
     object Settings : Screen("settings")
+    object ProfileEdit : Screen("profile_edit")
 }
 
 @Composable
@@ -107,7 +110,24 @@ fun UnfilteredNavGraph(
         }
 
         composable(Screen.Settings.route) {
-            PlaceholderScreen(title = "Settings", onBackClick = { navController.popBackStack() })
+            SettingsScreen(
+                onBackClick = { navController.popBackStack() },
+                onEditProfileClick = {
+                    navController.navigate(Screen.ProfileEdit.route)
+                },
+                onLogout = {
+                    navController.navigate(Screen.Auth.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable(Screen.ProfileEdit.route) {
+            ProfileEditScreen(
+                onBackClick = { navController.popBackStack() },
+                onSaveSuccess = { navController.popBackStack() }
+            )
         }
     }
 }

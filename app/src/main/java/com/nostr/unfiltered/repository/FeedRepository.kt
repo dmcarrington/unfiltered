@@ -188,6 +188,7 @@ class FeedRepository @Inject constructor(
             authorName = metadata?.bestName,
             authorAvatar = metadata?.picture,
             authorNip05 = metadata?.nip05,
+            authorLud16 = metadata?.lud16,
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong())
         )
     }
@@ -218,7 +219,8 @@ class FeedRepository @Inject constructor(
             val updated = entry.value.copy(
                 authorName = metadata.bestName,
                 authorAvatar = metadata.picture,
-                authorNip05 = metadata.nip05
+                authorNip05 = metadata.nip05,
+                authorLud16 = metadata.lud16
             )
             postsCache[entry.key] = updated
         }

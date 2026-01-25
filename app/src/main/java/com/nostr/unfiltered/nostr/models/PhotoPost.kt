@@ -19,6 +19,7 @@ data class PhotoPost(
     val authorName: String? = null,
     val authorAvatar: String? = null,
     val authorNip05: String? = null,
+    val authorLud16: String? = null,
 
     // Interaction state
     val isLiked: Boolean = false,
