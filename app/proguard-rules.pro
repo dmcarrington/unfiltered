@@ -1,5 +1,11 @@
 # Add project specific ProGuard rules here.
 
+# Google Error Prone annotations (used by Tink crypto, not needed at runtime)
+-dontwarn com.google.errorprone.annotations.**
+
+# Java AWT classes (not available on Android, referenced by JNA)
+-dontwarn java.awt.**
+
 # rust-nostr JNA rules
 -keep class rust.nostr.** { *; }
 -keep class com.sun.jna.** { *; }
