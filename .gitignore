@@ -6,3 +6,5 @@ app/build/
 local.properties
 .idea/
 .env
+keystore.properties                                                                                                                                                                                                                                    
+*.keystore

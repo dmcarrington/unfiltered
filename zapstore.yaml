@@ -1,5 +1,5 @@
 name: Unfiltered
-release_source: ./app/build/outputs/apk/release/app-release-unsigned.apk
+release_source: ./app/build/outputs/apk/release/app-release.apk
 repository: https://github.com/dmcarrington/unfiltered
 version: 0.1.0
 icon: app/src/main/res/mipmap-hdpi/ic_launcher.png
