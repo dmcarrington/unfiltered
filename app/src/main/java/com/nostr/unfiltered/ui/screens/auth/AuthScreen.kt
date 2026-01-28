@@ -100,7 +100,7 @@ fun AuthScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(80.dp),
-                contentScale = ContentScale.Fit
+                contentScale = ContentScale.FillHeight
             )
 
             Text(

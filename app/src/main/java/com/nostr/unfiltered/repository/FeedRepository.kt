@@ -116,6 +116,11 @@ class FeedRepository @Inject constructor(
         val post = parsePhotoPost(event) ?: return
         postsCache[post.id] = post
         refreshPostsList()
+
+        // Fetch author metadata if not cached
+        if (userMetadataCache[post.authorPubkey] == null) {
+            fetchUserMetadata(post.authorPubkey)
+        }
     }
 
     fun parsePhotoPost(event: Event): PhotoPost? {

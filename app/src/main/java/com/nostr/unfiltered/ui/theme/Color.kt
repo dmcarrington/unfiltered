@@ -3,7 +3,7 @@ package com.nostr.unfiltered.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Unfiltered brand colors (from banner)
-val DarkBlueBackground = Color(0xFF0D1B2A)
+val DarkBlueBackground = Color(0xFF10172C)
 val DarkBlueSurface = Color(0xFF1B2838)
 val DarkBlueCard = Color(0xFF243447)
 
