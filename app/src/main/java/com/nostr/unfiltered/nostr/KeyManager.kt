@@ -41,6 +41,23 @@ class KeyManager @Inject constructor(
     private val _authState = MutableStateFlow(AuthState.UNKNOWN)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
+    private val _pendingAmberCallback = MutableStateFlow<AmberCallbackResult?>(null)
+    val pendingAmberCallback: StateFlow<AmberCallbackResult?> = _pendingAmberCallback.asStateFlow()
+
+    /**
+     * Set a pending Amber callback result to be consumed by the UI
+     */
+    fun setPendingAmberCallback(result: AmberCallbackResult) {
+        _pendingAmberCallback.value = result
+    }
+
+    /**
+     * Clear the pending Amber callback after it's been consumed
+     */
+    fun clearPendingAmberCallback() {
+        _pendingAmberCallback.value = null
+    }
+
     init {
         // Check initial auth state
         _authState.value = when {

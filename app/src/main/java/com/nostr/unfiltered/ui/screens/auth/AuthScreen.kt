@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,17 +48,25 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import com.nostr.unfiltered.R
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.nostr.unfiltered.nostr.AmberCallbackResult
+import com.nostr.unfiltered.R
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.viewmodel.AuthViewModel
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.android.components.ActivityComponent
+
+@EntryPoint
+@InstallIn(ActivityComponent::class)
+interface KeyManagerEntryPoint {
+    fun keyManager(): KeyManager
+}
 
 @Composable
 fun AuthScreen(
@@ -69,11 +76,28 @@ fun AuthScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
+    // Access KeyManager via Hilt EntryPoint
+    val keyManager = remember {
+        EntryPointAccessors.fromActivity(
+            context as Activity,
+            KeyManagerEntryPoint::class.java
+        ).keyManager()
+    }
+    val pendingCallback by keyManager.pendingAmberCallback.collectAsState()
+
     // Amber activity launcher
     val amberLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         // Amber returns result via callback URL, handled in MainActivity
+    }
+
+    // Handle pending Amber callback
+    LaunchedEffect(pendingCallback) {
+        pendingCallback?.let { callback ->
+            viewModel.handleAmberResult(callback)
+            keyManager.clearPendingAmberCallback()
+        }
     }
 
     // Handle authentication success
