@@ -1,8 +1,10 @@
 package com.nostr.unfiltered.repository
 
 import com.nostr.unfiltered.nostr.KeyManager
+import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.NostrEvent
+import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.ContactList
 import com.nostr.unfiltered.nostr.models.ImageDimensions
 import com.nostr.unfiltered.nostr.models.PhotoPost
@@ -29,12 +31,13 @@ import javax.inject.Singleton
 @Singleton
 class FeedRepository @Inject constructor(
     private val nostrClient: NostrClient,
-    private val keyManager: KeyManager
+    private val keyManager: KeyManager,
+    private val metadataCache: MetadataCache,
+    private val searchService: SearchService
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Caches
-    private val userMetadataCache = ConcurrentHashMap<String, UserMetadata>()
     private val postsCache = ConcurrentHashMap<String, PhotoPost>()
 
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
@@ -72,7 +75,7 @@ class FeedRepository @Inject constructor(
 
     private fun handleMetadataEvent(event: Event) {
         val pubkey = event.author().toHex()
-        val existing = userMetadataCache[pubkey]
+        val existing = metadataCache.get(pubkey)
         val eventCreatedAt = event.createdAt().asSecs().toLong()
 
         // Only update if newer
@@ -82,7 +85,7 @@ class FeedRepository @Inject constructor(
                 json = event.content(),
                 createdAt = eventCreatedAt
             )
-            userMetadataCache[pubkey] = metadata
+            metadataCache.put(metadata)
 
             // Update any cached posts with new author info
             updatePostsWithMetadata(pubkey, metadata)
@@ -112,14 +115,52 @@ class FeedRepository @Inject constructor(
         }
     }
 
+    // Pending pubkeys that need metadata fetching
+    private val pendingMetadataFetches = mutableSetOf<String>()
+    private var metadataFetchJob: kotlinx.coroutines.Job? = null
+
     private fun handlePhotoPostEvent(event: Event) {
         val post = parsePhotoPost(event) ?: return
         postsCache[post.id] = post
         refreshPostsList()
 
-        // Fetch author metadata if not cached
-        if (userMetadataCache[post.authorPubkey] == null) {
-            fetchUserMetadata(post.authorPubkey)
+        // Queue metadata fetch if not cached
+        if (!metadataCache.contains(post.authorPubkey)) {
+            synchronized(pendingMetadataFetches) {
+                pendingMetadataFetches.add(post.authorPubkey)
+            }
+            scheduleBatchMetadataFetch()
+        }
+    }
+
+    private fun scheduleBatchMetadataFetch() {
+        // Cancel existing job if still pending
+        if (metadataFetchJob?.isActive == true) return
+
+        metadataFetchJob = scope.launch {
+            // Small delay to batch multiple requests
+            kotlinx.coroutines.delay(500)
+
+            val pubkeysToFetch: List<String>
+            synchronized(pendingMetadataFetches) {
+                pubkeysToFetch = pendingMetadataFetches.toList()
+                pendingMetadataFetches.clear()
+            }
+
+            if (pubkeysToFetch.isNotEmpty()) {
+                try {
+                    // Use SearchService's reliable direct fetch
+                    val metadataList = searchService.fetchMetadataForPubkeys(pubkeysToFetch)
+
+                    // Update posts with fetched metadata
+                    metadataList.forEach { metadata ->
+                        updatePostsWithMetadata(metadata.pubkey, metadata)
+                    }
+                } catch (e: Exception) {
+                    // Fallback to subscription-based fetch
+                    pubkeysToFetch.forEach { fetchUserMetadata(it) }
+                }
+            }
         }
     }
 
@@ -177,7 +218,7 @@ class FeedRepository @Inject constructor(
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val authorPubkey = event.author().toHex()
-        val metadata = userMetadataCache[authorPubkey]
+        val metadata = metadataCache.get(authorPubkey)
 
         return PhotoPost(
             id = event.id().toHex(),
@@ -321,7 +362,7 @@ class FeedRepository @Inject constructor(
     }
 
     fun getUserMetadata(pubkey: String): UserMetadata? {
-        return userMetadataCache[pubkey]
+        return metadataCache.get(pubkey)
     }
 
     fun getPostsByAuthor(pubkey: String): List<PhotoPost> {
