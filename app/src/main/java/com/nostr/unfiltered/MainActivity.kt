@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         // Handle Amber callback when returning from Amber app
         handleAmberCallback(intent)
     }

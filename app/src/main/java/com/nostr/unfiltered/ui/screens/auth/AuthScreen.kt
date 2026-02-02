@@ -85,11 +85,12 @@ fun AuthScreen(
     }
     val pendingCallback by keyManager.pendingAmberCallback.collectAsState()
 
-    // Amber activity launcher
+    // Amber activity launcher (NIP-55)
     val amberLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        // Amber returns result via callback URL, handled in MainActivity
+        // Handle result from Amber via Activity Result API
+        viewModel.handleAmberActivityResult(result.resultCode, result.data)
     }
 
     // Handle pending Amber callback
