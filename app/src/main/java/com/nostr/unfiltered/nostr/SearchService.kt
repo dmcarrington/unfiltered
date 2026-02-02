@@ -25,7 +25,9 @@ import javax.inject.Singleton
  * for reliable user search.
  */
 @Singleton
-class SearchService @Inject constructor() {
+class SearchService @Inject constructor(
+    private val metadataCache: MetadataCache
+) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -112,6 +114,8 @@ class SearchService @Inject constructor() {
                                 json = event.content(),
                                 createdAt = event.createdAt().asSecs().toLong()
                             )
+                            // Cache the metadata for later use
+                            metadataCache.put(metadata)
                             synchronized(results) {
                                 results.add(metadata)
                             }
@@ -376,5 +380,132 @@ class SearchService @Inject constructor() {
             diff < 604800 -> "${diff / 86400}d"
             else -> "${diff / 604800}w"
         }
+    }
+
+    /**
+     * Fetch metadata for multiple pubkeys directly from relays.
+     * More reliable than subscription-based approach.
+     */
+    suspend fun fetchMetadataForPubkeys(pubkeys: List<String>): List<UserMetadata> = withContext(Dispatchers.IO) {
+        if (pubkeys.isEmpty()) return@withContext emptyList()
+
+        val results = mutableMapOf<String, UserMetadata>()
+
+        // Try multiple relays
+        val relays = listOf(
+            "wss://relay.nostr.band",
+            "wss://relay.damus.io",
+            "wss://relay.primal.net"
+        )
+
+        for (relayUrl in relays) {
+            try {
+                val relayResults = fetchMetadataFromRelay(relayUrl, pubkeys)
+                relayResults.forEach { metadata ->
+                    if (!results.containsKey(metadata.pubkey)) {
+                        results[metadata.pubkey] = metadata
+                        // Also cache the metadata
+                        metadataCache.put(metadata)
+                    }
+                }
+
+                // If we got all results, stop
+                if (results.size >= pubkeys.size) break
+            } catch (e: Exception) {
+                continue
+            }
+        }
+
+        results.values.toList()
+    }
+
+    private suspend fun fetchMetadataFromRelay(relayUrl: String, pubkeys: List<String>): List<UserMetadata> {
+        val results = mutableListOf<UserMetadata>()
+        val completed = CompletableDeferred<Unit>()
+
+        val subscriptionId = "metadata_batch_${System.currentTimeMillis()}"
+
+        // Build filter for kind 0 (metadata) by authors
+        val filterJson = JSONObject().apply {
+            put("kinds", JSONArray().put(0))
+            put("authors", JSONArray().apply {
+                pubkeys.forEach { put(it) }
+            })
+        }
+
+        val reqMessage = JSONArray().apply {
+            put("REQ")
+            put(subscriptionId)
+            put(filterJson)
+        }.toString()
+
+        val request = Request.Builder()
+            .url(relayUrl)
+            .build()
+
+        var webSocket: WebSocket? = null
+
+        val listener = object : WebSocketListener() {
+            override fun onOpen(ws: WebSocket, response: Response) {
+                ws.send(reqMessage)
+            }
+
+            override fun onMessage(ws: WebSocket, text: String) {
+                try {
+                    val json = JSONArray(text)
+                    when (json.getString(0)) {
+                        "EVENT" -> {
+                            val eventJson = json.getJSONObject(2).toString()
+                            val event = Event.fromJson(eventJson)
+                            val pubkey = event.author().toHex()
+                            val metadata = UserMetadata.fromJson(
+                                pubkey = pubkey,
+                                json = event.content(),
+                                createdAt = event.createdAt().asSecs().toLong()
+                            )
+                            synchronized(results) {
+                                results.add(metadata)
+                            }
+                        }
+                        "EOSE" -> {
+                            completed.complete(Unit)
+                        }
+                        "CLOSED" -> {
+                            completed.complete(Unit)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Parse error, ignore
+                }
+            }
+
+            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                completed.complete(Unit)
+            }
+
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                ws.close(1000, null)
+                completed.complete(Unit)
+            }
+        }
+
+        webSocket = client.newWebSocket(request, listener)
+
+        withTimeoutOrNull(5000) {
+            completed.await()
+        }
+
+        try {
+            val closeMessage = JSONArray().apply {
+                put("CLOSE")
+                put(subscriptionId)
+            }.toString()
+            webSocket.send(closeMessage)
+            webSocket.close(1000, "Fetch complete")
+        } catch (e: Exception) {
+            // Ignore
+        }
+
+        return results
     }
 }

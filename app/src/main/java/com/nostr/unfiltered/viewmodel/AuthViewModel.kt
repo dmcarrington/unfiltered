@@ -46,7 +46,59 @@ class AuthViewModel @Inject constructor(
     }
 
     /**
-     * Handle result from Amber callback
+     * Handle result from Amber Activity Result (NIP-55)
+     * Amber returns the public key via intent extra "result" or "signature"
+     */
+    fun handleAmberActivityResult(resultCode: Int, data: Intent?) {
+        if (resultCode != android.app.Activity.RESULT_OK) {
+            _uiState.value = _uiState.value.copy(
+                error = "Amber authorization was cancelled"
+            )
+            return
+        }
+
+        // Amber may return the public key under different extra keys
+        var pubkey = data?.getStringExtra("result")
+            ?: data?.getStringExtra("signature")
+            ?: data?.getStringExtra("pubkey")
+            ?: data?.getStringExtra("npub")
+
+        // Also check if it's in the data URI as a query parameter
+        if (pubkey.isNullOrBlank()) {
+            val uri = data?.data
+            pubkey = uri?.getQueryParameter("result")
+                ?: uri?.getQueryParameter("pubkey")
+                ?: uri?.getQueryParameter("npub")
+        }
+
+        if (pubkey.isNullOrBlank()) {
+            // Debug: show what we received
+            val extras = data?.extras?.keySet()?.joinToString(", ") ?: "none"
+            val dataUri = data?.data?.toString() ?: "none"
+            _uiState.value = _uiState.value.copy(
+                error = "No public key from Amber. Extras: $extras, Data: $dataUri"
+            )
+            return
+        }
+
+        keyManager.saveAmberPublicKeyAny(pubkey)
+            .onSuccess {
+                _uiState.value = _uiState.value.copy(
+                    isAuthenticated = true,
+                    npub = keyManager.getNpub(),
+                    error = null
+                )
+                connectToRelays()
+            }
+            .onFailure { e ->
+                _uiState.value = _uiState.value.copy(
+                    error = "Invalid public key from Amber: ${e.message}"
+                )
+            }
+    }
+
+    /**
+     * Handle result from Amber callback (legacy deep link approach)
      */
     fun handleAmberResult(result: AmberCallbackResult) {
         when (result) {

@@ -9,8 +9,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -47,9 +46,13 @@ fun UnfilteredNavGraph(
     navController: NavHostController = rememberNavController(),
     authViewModel: AuthViewModel = hiltViewModel()
 ) {
-    val isAuthenticated by authViewModel.isAuthenticated.collectAsState()
-
-    val startDestination = if (isAuthenticated) Screen.Feed.route else Screen.Auth.route
+    // Compute startDestination only once at initial composition.
+    // Reactive updates to isAuthenticated should NOT change the start destination,
+    // as that would navigate away from AuthScreen (dismissing the backup warning dialog)
+    // before the user has acknowledged saving their nsec.
+    val startDestination = remember {
+        if (authViewModel.isAuthenticated.value) Screen.Feed.route else Screen.Auth.route
+    }
 
     NavHost(
         navController = navController,

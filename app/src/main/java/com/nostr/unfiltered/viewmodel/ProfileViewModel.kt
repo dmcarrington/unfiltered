@@ -76,7 +76,18 @@ class ProfileViewModel @Inject constructor(
                                 json = event.content(),
                                 createdAt = event.createdAt().asSecs().toLong()
                             )
-                            _uiState.update { it.copy(metadata = metadata, isLoading = false) }
+                            _uiState.update { state ->
+                                // Update existing posts with the new metadata
+                                val updatedPosts = state.posts.map { post ->
+                                    post.copy(
+                                        authorName = metadata.bestName,
+                                        authorAvatar = metadata.picture,
+                                        authorNip05 = metadata.nip05,
+                                        authorLud16 = metadata.lud16
+                                    )
+                                }
+                                state.copy(metadata = metadata, posts = updatedPosts, isLoading = false)
+                            }
                         }
                         1, 20 -> {
                             // Kind 1 (note) or Kind 20 (picture post)
@@ -102,13 +113,37 @@ class ProfileViewModel @Inject constructor(
 
         // Check cached metadata
         feedRepository.getUserMetadata(pubkey)?.let { metadata ->
-            _uiState.update { it.copy(metadata = metadata, isLoading = false) }
+            _uiState.update { state ->
+                // Update existing posts with the cached metadata
+                val updatedPosts = state.posts.map { post ->
+                    post.copy(
+                        authorName = metadata.bestName,
+                        authorAvatar = metadata.picture,
+                        authorNip05 = metadata.nip05,
+                        authorLud16 = metadata.lud16
+                    )
+                }
+                state.copy(metadata = metadata, posts = updatedPosts, isLoading = false)
+            }
         }
 
         // Load cached posts by this author
         val cachedPosts = feedRepository.getPostsByAuthor(pubkey)
         if (cachedPosts.isNotEmpty()) {
-            _uiState.update { it.copy(posts = cachedPosts) }
+            _uiState.update { state ->
+                // Enrich cached posts with metadata if available
+                val enrichedPosts = state.metadata?.let { metadata ->
+                    cachedPosts.map { post ->
+                        post.copy(
+                            authorName = metadata.bestName,
+                            authorAvatar = metadata.picture,
+                            authorNip05 = metadata.nip05,
+                            authorLud16 = metadata.lud16
+                        )
+                    }
+                } ?: cachedPosts
+                state.copy(posts = enrichedPosts)
+            }
         }
 
         // Directly fetch posts from relays (most reliable method)
@@ -119,8 +154,19 @@ class ProfileViewModel @Inject constructor(
                     _uiState.update { state ->
                         val existingIds = state.posts.map { it.id }.toSet()
                         val newPosts = fetchedPosts.filter { it.id !in existingIds }
+                        // Enrich posts with metadata if available
+                        val enrichedPosts = newPosts.map { post ->
+                            state.metadata?.let { metadata ->
+                                post.copy(
+                                    authorName = metadata.bestName,
+                                    authorAvatar = metadata.picture,
+                                    authorNip05 = metadata.nip05,
+                                    authorLud16 = metadata.lud16
+                                )
+                            } ?: post
+                        }
                         state.copy(
-                            posts = (state.posts + newPosts).sortedByDescending { it.createdAt },
+                            posts = (state.posts + enrichedPosts).sortedByDescending { it.createdAt },
                             isLoading = false
                         )
                     }

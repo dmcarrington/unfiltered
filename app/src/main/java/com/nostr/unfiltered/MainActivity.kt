@@ -9,16 +9,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.ui.navigation.UnfilteredNavGraph
 import com.nostr.unfiltered.ui.theme.UnfilteredTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @Inject
+    lateinit var keyManager: KeyManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Handle Amber callback if app was launched via deep link
+        handleAmberCallback(intent)
 
         setContent {
             UnfilteredTheme {
@@ -34,17 +42,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Handle Amber callback
+        setIntent(intent)
+        // Handle Amber callback when returning from Amber app
         handleAmberCallback(intent)
     }
 
     private fun handleAmberCallback(intent: Intent) {
         val data = intent.data ?: return
         if (data.scheme == "nostr-unfiltered") {
-            // Amber callback - extract result and pass to appropriate handler
-            val signature = data.getQueryParameter("signature")
-            val event = data.getQueryParameter("event")
-            // These will be handled by the AuthViewModel
+            val result = keyManager.parseAmberCallback(data)
+            keyManager.setPendingAmberCallback(result)
         }
     }
 }

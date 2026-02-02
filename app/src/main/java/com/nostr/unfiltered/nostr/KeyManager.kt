@@ -41,6 +41,23 @@ class KeyManager @Inject constructor(
     private val _authState = MutableStateFlow(AuthState.UNKNOWN)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
+    private val _pendingAmberCallback = MutableStateFlow<AmberCallbackResult?>(null)
+    val pendingAmberCallback: StateFlow<AmberCallbackResult?> = _pendingAmberCallback.asStateFlow()
+
+    /**
+     * Set a pending Amber callback result to be consumed by the UI
+     */
+    fun setPendingAmberCallback(result: AmberCallbackResult) {
+        _pendingAmberCallback.value = result
+    }
+
+    /**
+     * Clear the pending Amber callback after it's been consumed
+     */
+    fun clearPendingAmberCallback() {
+        _pendingAmberCallback.value = null
+    }
+
     init {
         // Check initial auth state
         _authState.value = when {
@@ -173,16 +190,11 @@ class KeyManager @Inject constructor(
     }
 
     /**
-     * Create intent to get public key from Amber
+     * Create intent to get public key from Amber (NIP-55)
      */
     fun createAmberGetPublicKeyIntent(): Intent {
-        return Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.Builder()
-                .scheme("nostrsigner")
-                .authority("get_public_key")
-                .appendQueryParameter("callbackUrl", "nostr-unfiltered://callback")
-                .build()
-            addCategory(Intent.CATEGORY_BROWSABLE)
+        return Intent(Intent.ACTION_VIEW, Uri.parse("nostrsigner:")).apply {
+            putExtra("type", "get_public_key")
         }
     }
 
@@ -235,7 +247,7 @@ class KeyManager @Inject constructor(
     }
 
     /**
-     * Save public key received from Amber
+     * Save public key received from Amber (npub format)
      */
     fun saveAmberPublicKey(npub: String): Result<Unit> {
         return try {
@@ -253,6 +265,38 @@ class KeyManager @Inject constructor(
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Save public key received from Amber (handles both hex and npub formats)
+     */
+    fun saveAmberPublicKeyAny(pubkeyString: String): Result<Unit> {
+        return try {
+            val trimmed = pubkeyString.trim()
+
+            // Try to parse as npub first, then as hex
+            val pubkey = when {
+                trimmed.startsWith("npub1") -> PublicKey.fromBech32(trimmed)
+                trimmed.length == 64 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } ->
+                    PublicKey.fromHex(trimmed)
+                else -> throw IllegalArgumentException(
+                    "Unrecognized format (len=${trimmed.length}, first20='${trimmed.take(20)}')"
+                )
+            }
+            val npub = pubkey.toBech32()
+
+            securePrefs.edit()
+                .putString("npub", npub)
+                .putBoolean("amber_connected", true)
+                .remove("nsec") // Never store nsec when using Amber
+                .apply()
+
+            cachedKeys = null
+            _authState.value = AuthState.AUTHENTICATED_AMBER
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(Exception("Received '${pubkeyString.take(30)}...': ${e.message}"))
         }
     }
 

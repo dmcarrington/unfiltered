@@ -1,7 +1,7 @@
 name: Unfiltered
 release_source: ./app/build/outputs/apk/release/app-release.apk
 repository: https://github.com/dmcarrington/unfiltered
-version: 1.0.0
+version: 1.0.1
 icon: app/src/main/res/mipmap-hdpi/ic_launcher.png
 license: MIT
 remote_metadata:
@@ -21,3 +21,4 @@ supported_nips:
   - "57"
   - "68"
   - "94"
+release_notes: ./CHANGELOG.md
