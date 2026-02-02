@@ -345,7 +345,7 @@ fun SettingsScreen(
 
             // App Info
             Text(
-                text = "Unfiltered v1.0.0",
+                text = "Unfiltered v1.0.1",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
