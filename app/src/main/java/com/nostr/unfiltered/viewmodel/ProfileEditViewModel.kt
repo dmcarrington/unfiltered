@@ -196,20 +196,40 @@ class ProfileEditViewModel @Inject constructor(
     }
 
     /**
-     * Handle the signed event returned from Amber
+     * Handle the signed event returned from Amber.
+     * Amber may return either:
+     * - Full signed event JSON (with "id" and "sig" fields)
+     * - Just the signature (hex string)
      */
     fun handleAmberSignedEvent(signedEventJson: String) {
         viewModelScope.launch {
             try {
-                val event = Event.fromJson(signedEventJson)
-                val success = nostrClient.publish(event)
-                _uiState.update {
-                    it.copy(
-                        needsAmberSigning = null,
-                        pendingMetadataJson = null,
-                        saveSuccess = success,
-                        error = if (!success) "Failed to publish to relays" else null
-                    )
+                val event = try {
+                    // First, try to parse as a full signed event
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    // If that fails, it might be just a signature - reconstruct the event
+                    reconstructSignedEvent(signedEventJson)
+                }
+
+                if (event != null) {
+                    val success = nostrClient.publish(event)
+                    _uiState.update {
+                        it.copy(
+                            needsAmberSigning = null,
+                            pendingMetadataJson = null,
+                            saveSuccess = success,
+                            error = if (!success) "Failed to publish to relays" else null
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            needsAmberSigning = null,
+                            pendingMetadataJson = null,
+                            error = "Failed to reconstruct signed event"
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update {
@@ -221,6 +241,55 @@ class ProfileEditViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Reconstruct a signed event from a signature and the stored unsigned event.
+     */
+    private fun reconstructSignedEvent(signature: String): Event? {
+        val unsignedJson = _uiState.value.pendingMetadataJson ?: return null
+
+        return try {
+            val eventObj = JSONObject(unsignedJson)
+
+            // Compute the event ID (sha256 of serialized event)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+
+            // Add id and sig to create signed event
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun computeEventSerialization(event: JSONObject): String {
+        val kind = event.getInt("kind")
+        val pubkey = event.getString("pubkey")
+        val createdAt = event.getLong("created_at")
+        val tags = event.getJSONArray("tags")
+        val content = event.getString("content")
+
+        // NIP-01 serialization: [0,<pubkey>,<created_at>,<kind>,<tags>,<content>]
+        return "[0,\"$pubkey\",$createdAt,$kind,$tags,\"${escapeJsonString(content)}\"]"
+    }
+
+    private fun escapeJsonString(str: String): String {
+        return str
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    private fun computeSha256Hex(input: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }
     }
 
     fun clearAmberSigningRequest() {

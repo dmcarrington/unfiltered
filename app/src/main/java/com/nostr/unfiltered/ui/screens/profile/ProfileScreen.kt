@@ -66,6 +66,7 @@ fun ProfileScreen(
             // Amber returns the signed event in various possible extras
             val signedEvent = result.data?.getStringExtra("event")
                 ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
             if (signedEvent != null) {
                 viewModel.handleAmberSignedFollow(signedEvent)
             } else {

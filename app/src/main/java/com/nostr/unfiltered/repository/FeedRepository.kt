@@ -41,6 +41,9 @@ class FeedRepository @Inject constructor(
     // Caches
     private val postsCache = ConcurrentHashMap<String, PhotoPost>()
 
+    // Track which posts the current user has liked (event IDs)
+    private val myLikedPosts = mutableSetOf<String>()
+
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
     val posts: StateFlow<List<PhotoPost>> = _posts.asStateFlow()
 
@@ -56,8 +59,16 @@ class FeedRepository @Inject constructor(
 
     private var pendingFollowPubkey: String? = null
     private var pendingFollowAction: FollowAction? = null
+    private var pendingFollowUnsignedEvent: String? = null
 
     enum class FollowAction { FOLLOW, UNFOLLOW }
+
+    // Amber signing flow for likes
+    private val _pendingLikeIntent = MutableStateFlow<Intent?>(null)
+    val pendingLikeIntent: StateFlow<Intent?> = _pendingLikeIntent.asStateFlow()
+
+    private var pendingLikePostId: String? = null
+    private var pendingLikeUnsignedEvent: String? = null
 
     init {
         observeEvents()
@@ -116,10 +127,21 @@ class FeedRepository @Inject constructor(
     private fun handleReactionEvent(event: Event) {
         val tags = parseTagsFromEvent(event)
         val targetEventId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1) ?: return
+        val reactorPubkey = event.author().toHex()
+        val myPubkey = keyManager.getPublicKeyHex()
+
+        // Check if this is the current user's reaction
+        val isMyReaction = reactorPubkey == myPubkey
+        if (isMyReaction) {
+            myLikedPosts.add(targetEventId)
+        }
 
         // Update like status on the target post
         postsCache[targetEventId]?.let { post ->
-            val updatedPost = post.copy(likeCount = post.likeCount + 1)
+            val updatedPost = post.copy(
+                likeCount = post.likeCount + 1,
+                isLiked = post.isLiked || isMyReaction
+            )
             postsCache[targetEventId] = updatedPost
             refreshPostsList()
         }
@@ -229,9 +251,10 @@ class FeedRepository @Inject constructor(
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val authorPubkey = event.author().toHex()
         val metadata = metadataCache.get(authorPubkey)
+        val eventId = event.id().toHex()
 
         return PhotoPost(
-            id = event.id().toHex(),
+            id = eventId,
             authorPubkey = authorPubkey,
             createdAt = event.createdAt().asSecs().toLong(),
             imageUrl = imageUrl,
@@ -245,7 +268,8 @@ class FeedRepository @Inject constructor(
             authorAvatar = metadata?.picture,
             authorNip05 = metadata?.nip05,
             authorLud16 = metadata?.lud16,
-            relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong())
+            relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
+            isLiked = myLikedPosts.contains(eventId)
         )
     }
 
@@ -294,7 +318,7 @@ class FeedRepository @Inject constructor(
     fun subscribeToFeed() {
         _isLoading.value = true
 
-        // First, load our follow list
+        // First, load our follow list and our own reactions
         val myPubkey = keyManager.getPublicKeyHex()
         if (myPubkey != null) {
             val followListFilter = Filter()
@@ -303,6 +327,14 @@ class FeedRepository @Inject constructor(
                 .limit(1u)
 
             nostrClient.subscribe("my_follows", listOf(followListFilter))
+
+            // Subscribe to our own reactions to track which posts we've liked
+            val myReactionsFilter = Filter()
+                .kind(Kind(7u))
+                .author(PublicKey.fromHex(myPubkey))
+                .limit(500u)
+
+            nostrClient.subscribe("my_reactions", listOf(myReactionsFilter))
         }
 
         // Subscribe to global picture posts (kind 20) for now
@@ -328,6 +360,17 @@ class FeedRepository @Inject constructor(
 
         // Unsubscribe from global feed
         nostrClient.unsubscribe("feed")
+
+        // Subscribe to our own reactions to track which posts we've liked
+        val myPubkey = keyManager.getPublicKeyHex()
+        if (myPubkey != null) {
+            val myReactionsFilter = Filter()
+                .kind(Kind(7u))
+                .author(PublicKey.fromHex(myPubkey))
+                .limit(500u)
+
+            nostrClient.subscribe("my_reactions", listOf(myReactionsFilter))
+        }
 
         // Subscribe to posts from followed users
         val authors = follows.mapNotNull { pubkey ->
@@ -384,30 +427,170 @@ class FeedRepository @Inject constructor(
     // ==================== Actions ====================
 
     fun likePost(post: PhotoPost) {
-        val keys = keyManager.getKeys() ?: return
-
         scope.launch {
             try {
-                val tags = listOf(
-                    Tag.parse(listOf("e", post.id)),
-                    Tag.parse(listOf("p", post.authorPubkey)),
-                    Tag.parse(listOf("k", "20"))
-                )
+                if (keyManager.isAmberConnected()) {
+                    // Amber flow: create unsigned event and request signing
+                    val unsignedEvent = createUnsignedLikeEvent(post)
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = unsignedEvent,
+                        eventId = "like_${post.id}"
+                    )
+                    pendingLikePostId = post.id
+                    pendingLikeUnsignedEvent = unsignedEvent
+                    _pendingLikeIntent.value = intent
+                } else {
+                    // Local keys flow
+                    val keys = keyManager.getKeys() ?: return@launch
 
-                val event = EventBuilder(Kind(7u), "+", tags)
-                    .toEvent(keys)
+                    val tags = listOf(
+                        Tag.parse(listOf("e", post.id)),
+                        Tag.parse(listOf("p", post.authorPubkey)),
+                        Tag.parse(listOf("k", "20"))
+                    )
 
-                nostrClient.publish(event)
+                    val event = EventBuilder(Kind(7u), "+", tags)
+                        .toEvent(keys)
 
-                // Optimistically update UI
-                postsCache[post.id]?.let { cached ->
-                    postsCache[post.id] = cached.copy(isLiked = true, likeCount = cached.likeCount + 1)
-                    refreshPostsList()
+                    nostrClient.publish(event)
+
+                    // Optimistically update UI
+                    postsCache[post.id]?.let { cached ->
+                        postsCache[post.id] = cached.copy(isLiked = true, likeCount = cached.likeCount + 1)
+                        refreshPostsList()
+                    }
                 }
             } catch (e: Exception) {
                 // Handle error
             }
         }
+    }
+
+    /**
+     * Create unsigned kind 7 (reaction) event for Amber signing
+     */
+    private fun createUnsignedLikeEvent(post: PhotoPost): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+
+        val tags = JSONArray().apply {
+            put(JSONArray().apply { put("e"); put(post.id) })
+            put(JSONArray().apply { put("p"); put(post.authorPubkey) })
+            put(JSONArray().apply { put("k"); put("20") })
+        }
+
+        return JSONObject().apply {
+            put("kind", 7)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", tags)
+            put("content", "+")
+        }.toString()
+    }
+
+    /**
+     * Handle signed like event from Amber.
+     * Amber may return either:
+     * - Full signed event JSON (with "id" and "sig" fields)
+     * - Just the signature (hex string)
+     */
+    fun handleAmberSignedLike(signedEventJson: String) {
+        scope.launch {
+            try {
+                val event = try {
+                    // First, try to parse as a full signed event
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    // If that fails, it might be just a signature - reconstruct the event
+                    reconstructSignedEvent(signedEventJson)
+                }
+
+                if (event != null) {
+                    nostrClient.publish(event)
+
+                    // Optimistically update UI
+                    pendingLikePostId?.let { postId ->
+                        postsCache[postId]?.let { cached ->
+                            postsCache[postId] = cached.copy(isLiked = true, likeCount = cached.likeCount + 1)
+                            refreshPostsList()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Handle error
+            } finally {
+                clearPendingLikeIntent()
+            }
+        }
+    }
+
+    /**
+     * Reconstruct a signed event from a signature and the stored unsigned event.
+     * Amber sometimes returns just the signature instead of the full signed event.
+     */
+    private fun reconstructSignedEvent(signature: String): Event? {
+        val unsignedJson = pendingLikeUnsignedEvent ?: return null
+
+        return try {
+            // Parse the unsigned event
+            val eventObj = JSONObject(unsignedJson)
+
+            // Compute the event ID (sha256 of serialized event)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+
+            // Add id and sig to create signed event
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Compute the serialization of an event for ID calculation (NIP-01)
+     */
+    private fun computeEventSerialization(event: JSONObject): String {
+        val kind = event.getInt("kind")
+        val pubkey = event.getString("pubkey")
+        val createdAt = event.getLong("created_at")
+        val tags = event.getJSONArray("tags")
+        val content = event.getString("content")
+
+        // NIP-01 serialization: [0,<pubkey>,<created_at>,<kind>,<tags>,<content>]
+        return "[0,\"$pubkey\",$createdAt,$kind,$tags,\"${escapeJsonString(content)}\"]"
+    }
+
+    /**
+     * Escape a string for JSON serialization
+     */
+    private fun escapeJsonString(str: String): String {
+        return str
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    /**
+     * Compute SHA256 hash and return as hex string
+     */
+    private fun computeSha256Hex(input: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Clear pending like intent
+     */
+    fun clearPendingLikeIntent() {
+        _pendingLikeIntent.value = null
+        pendingLikePostId = null
+        pendingLikeUnsignedEvent = null
     }
 
     fun clearCache() {
@@ -434,6 +617,7 @@ class FeedRepository @Inject constructor(
                     )
                     pendingFollowPubkey = pubkey
                     pendingFollowAction = FollowAction.FOLLOW
+                    pendingFollowUnsignedEvent = unsignedEvent
                     _pendingFollowIntent.value = intent
                 } else {
                     // Sign locally with stored keys
@@ -462,6 +646,7 @@ class FeedRepository @Inject constructor(
                     )
                     pendingFollowPubkey = pubkey
                     pendingFollowAction = FollowAction.UNFOLLOW
+                    pendingFollowUnsignedEvent = unsignedEvent
                     _pendingFollowIntent.value = intent
                 } else {
                     // Sign locally with stored keys
@@ -520,23 +705,35 @@ class FeedRepository @Inject constructor(
     }
 
     /**
-     * Handle the signed contact list event returned from Amber
+     * Handle the signed contact list event returned from Amber.
+     * Amber may return either:
+     * - Full signed event JSON (with "id" and "sig" fields)
+     * - Just the signature (hex string)
      */
     fun handleAmberSignedContactList(signedEventJson: String) {
         scope.launch {
             try {
-                val event = Event.fromJson(signedEventJson)
-                nostrClient.publish(event)
+                val event = try {
+                    // First, try to parse as a full signed event
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    // If that fails, it might be just a signature - reconstruct the event
+                    reconstructSignedFollowEvent(signedEventJson)
+                }
 
-                // Update follow list based on pending action
-                pendingFollowPubkey?.let { pubkey ->
-                    val currentFollows = _followList.value.toMutableSet()
-                    when (pendingFollowAction) {
-                        FollowAction.FOLLOW -> currentFollows.add(pubkey)
-                        FollowAction.UNFOLLOW -> currentFollows.remove(pubkey)
-                        null -> {}
+                if (event != null) {
+                    nostrClient.publish(event)
+
+                    // Update follow list based on pending action
+                    pendingFollowPubkey?.let { pubkey ->
+                        val currentFollows = _followList.value.toMutableSet()
+                        when (pendingFollowAction) {
+                            FollowAction.FOLLOW -> currentFollows.add(pubkey)
+                            FollowAction.UNFOLLOW -> currentFollows.remove(pubkey)
+                            null -> {}
+                        }
+                        _followList.value = currentFollows
                     }
-                    _followList.value = currentFollows
                 }
             } catch (e: Exception) {
                 // Handle error - event parsing or publishing failed
@@ -547,12 +744,37 @@ class FeedRepository @Inject constructor(
     }
 
     /**
+     * Reconstruct a signed follow event from a signature and the stored unsigned event.
+     */
+    private fun reconstructSignedFollowEvent(signature: String): Event? {
+        val unsignedJson = pendingFollowUnsignedEvent ?: return null
+
+        return try {
+            // Parse the unsigned event
+            val eventObj = JSONObject(unsignedJson)
+
+            // Compute the event ID (sha256 of serialized event)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+
+            // Add id and sig to create signed event
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
      * Clear pending follow intent after it's been handled or cancelled
      */
     fun clearPendingFollowIntent() {
         _pendingFollowIntent.value = null
         pendingFollowPubkey = null
         pendingFollowAction = null
+        pendingFollowUnsignedEvent = null
     }
 
     // ==================== Helpers ====================

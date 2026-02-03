@@ -49,6 +49,9 @@ class FeedViewModel @Inject constructor(
     private val _zapState = MutableStateFlow<ZapState>(ZapState.Idle)
     val zapState: StateFlow<ZapState> = _zapState.asStateFlow()
 
+    // Amber like signing flow
+    val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
+
     private val _feedMode = MutableStateFlow(FeedMode.TRENDING)
     val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
 
@@ -188,6 +191,14 @@ class FeedViewModel @Inject constructor(
 
     fun likePost(post: PhotoPost) {
         feedRepository.likePost(post)
+    }
+
+    fun handleAmberSignedLike(signedEventJson: String) {
+        feedRepository.handleAmberSignedLike(signedEventJson)
+    }
+
+    fun clearPendingLikeIntent() {
+        feedRepository.clearPendingLikeIntent()
     }
 
     fun loadMorePosts() {
