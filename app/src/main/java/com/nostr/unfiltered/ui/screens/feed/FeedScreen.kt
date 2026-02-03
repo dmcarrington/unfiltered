@@ -1,6 +1,9 @@
 package com.nostr.unfiltered.ui.screens.feed
 
+import android.app.Activity
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,7 +79,34 @@ fun FeedScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val zapState by viewModel.zapState.collectAsState()
+    val pendingLikeIntent by viewModel.pendingLikeIntent.collectAsState()
     val listState = rememberLazyListState()
+
+    // Amber like signing launcher
+    val amberLikeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // Amber may return signed event under different extra keys
+            val signedEvent = result.data?.getStringExtra("event")
+                ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
+            if (signedEvent != null) {
+                viewModel.handleAmberSignedLike(signedEvent)
+            } else {
+                viewModel.clearPendingLikeIntent()
+            }
+        } else {
+            viewModel.clearPendingLikeIntent()
+        }
+    }
+
+    // Launch Amber for like signing when needed
+    LaunchedEffect(pendingLikeIntent) {
+        pendingLikeIntent?.let { intent ->
+            amberLikeLauncher.launch(intent)
+        }
+    }
 
     // Refresh zap status when screen appears
     LaunchedEffect(Unit) {

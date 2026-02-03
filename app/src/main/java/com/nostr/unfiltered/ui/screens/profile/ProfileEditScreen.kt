@@ -64,8 +64,10 @@ fun ProfileEditScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         result.data?.let { data ->
-            val signedEvent = data.getStringExtra("signature")
-                ?: data.getStringExtra("event")
+            // Amber may return signed event under different extra keys
+            val signedEvent = data.getStringExtra("event")
+                ?: data.getStringExtra("signature")
+                ?: data.getStringExtra("result")
             if (signedEvent != null) {
                 viewModel.handleAmberSignedEvent(signedEvent)
             } else {
