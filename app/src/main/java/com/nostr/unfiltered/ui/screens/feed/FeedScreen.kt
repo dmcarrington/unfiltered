@@ -19,11 +19,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +60,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nostr.unfiltered.ui.components.PhotoCard
+import com.nostr.unfiltered.viewmodel.FeedMode
 import com.nostr.unfiltered.viewmodel.FeedViewModel
 import com.nostr.unfiltered.viewmodel.ZapState
 
@@ -123,16 +127,65 @@ fun FeedScreen(
         }
     }
 
+    // Feed mode dropdown state
+    var dropdownExpanded by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Image(
-                        painter = painterResource(id = R.drawable.banner),
-                        contentDescription = "Unfiltered",
-                        modifier = Modifier.height(32.dp),
-                        contentScale = ContentScale.Fit
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.banner),
+                            contentDescription = "Unfiltered",
+                            modifier = Modifier.height(32.dp),
+                            contentScale = ContentScale.Fit
+                        )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Feed mode dropdown
+                        Box {
+                            TextButton(
+                                onClick = { dropdownExpanded = true }
+                            ) {
+                                Text(
+                                    text = when (uiState.feedMode) {
+                                        FeedMode.FOLLOWING -> "Following"
+                                        FeedMode.TRENDING -> "Trending"
+                                    },
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ArrowDropDown,
+                                    contentDescription = "Select feed"
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = dropdownExpanded,
+                                onDismissRequest = { dropdownExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Following") },
+                                    onClick = {
+                                        viewModel.setFeedMode(FeedMode.FOLLOWING)
+                                        dropdownExpanded = false
+                                    },
+                                    enabled = uiState.hasFollows
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Trending") },
+                                    onClick = {
+                                        viewModel.setFeedMode(FeedMode.TRENDING)
+                                        dropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                 },
                 actions = {
                     IconButton(onClick = onSearchClick) {
@@ -170,7 +223,7 @@ fun FeedScreen(
 
                 // Empty feed
                 uiState.isEmpty -> {
-                    EmptyFeedState()
+                    EmptyFeedState(feedMode = uiState.feedMode)
                 }
 
                 // Show posts
@@ -389,7 +442,7 @@ private fun DisconnectedState() {
 }
 
 @Composable
-private fun EmptyFeedState() {
+private fun EmptyFeedState(feedMode: FeedMode = FeedMode.TRENDING) {
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -407,13 +460,19 @@ private fun EmptyFeedState() {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "No photos yet",
+                text = if (feedMode == FeedMode.FOLLOWING)
+                    "No posts from people you follow"
+                else
+                    "No photos yet",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Photos from the Nostr network will appear here. Follow users or check back later!",
+                text = if (feedMode == FeedMode.FOLLOWING)
+                    "Follow more users to see their posts here!"
+                else
+                    "Photos from the Nostr network will appear here.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.secondary,
                 textAlign = TextAlign.Center

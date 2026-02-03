@@ -1,5 +1,6 @@
 package com.nostr.unfiltered.repository
 
+import android.content.Intent
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
@@ -48,6 +49,15 @@ class FeedRepository @Inject constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    // Amber signing flow for follow/unfollow
+    private val _pendingFollowIntent = MutableStateFlow<Intent?>(null)
+    val pendingFollowIntent: StateFlow<Intent?> = _pendingFollowIntent.asStateFlow()
+
+    private var pendingFollowPubkey: String? = null
+    private var pendingFollowAction: FollowAction? = null
+
+    enum class FollowAction { FOLLOW, UNFOLLOW }
 
     init {
         observeEvents()
@@ -410,17 +420,27 @@ class FeedRepository @Inject constructor(
     private var lastContactListCreatedAt: Long = 0
 
     fun followUser(pubkey: String) {
-        val keys = keyManager.getKeys() ?: return
-
         scope.launch {
             try {
                 val currentFollows = _followList.value.toMutableSet()
                 currentFollows.add(pubkey)
 
-                publishContactList(keys, currentFollows)
-
-                // Optimistically update
-                _followList.value = currentFollows
+                if (keyManager.isAmberConnected()) {
+                    // Need Amber to sign the contact list event
+                    val unsignedEvent = createUnsignedContactListEvent(currentFollows)
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = unsignedEvent,
+                        eventId = "follow_$pubkey"
+                    )
+                    pendingFollowPubkey = pubkey
+                    pendingFollowAction = FollowAction.FOLLOW
+                    _pendingFollowIntent.value = intent
+                } else {
+                    // Sign locally with stored keys
+                    val keys = keyManager.getKeys() ?: return@launch
+                    publishContactList(keys, currentFollows)
+                    _followList.value = currentFollows
+                }
             } catch (e: Exception) {
                 // Handle error
             }
@@ -428,17 +448,27 @@ class FeedRepository @Inject constructor(
     }
 
     fun unfollowUser(pubkey: String) {
-        val keys = keyManager.getKeys() ?: return
-
         scope.launch {
             try {
                 val currentFollows = _followList.value.toMutableSet()
                 currentFollows.remove(pubkey)
 
-                publishContactList(keys, currentFollows)
-
-                // Optimistically update
-                _followList.value = currentFollows
+                if (keyManager.isAmberConnected()) {
+                    // Need Amber to sign the contact list event
+                    val unsignedEvent = createUnsignedContactListEvent(currentFollows)
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = unsignedEvent,
+                        eventId = "unfollow_$pubkey"
+                    )
+                    pendingFollowPubkey = pubkey
+                    pendingFollowAction = FollowAction.UNFOLLOW
+                    _pendingFollowIntent.value = intent
+                } else {
+                    // Sign locally with stored keys
+                    val keys = keyManager.getKeys() ?: return@launch
+                    publishContactList(keys, currentFollows)
+                    _followList.value = currentFollows
+                }
             } catch (e: Exception) {
                 // Handle error
             }
@@ -463,6 +493,66 @@ class FeedRepository @Inject constructor(
 
     fun isFollowing(pubkey: String): Boolean {
         return _followList.value.contains(pubkey)
+    }
+
+    /**
+     * Create an unsigned kind 3 (contact list) event for Amber signing
+     */
+    private fun createUnsignedContactListEvent(follows: Set<String>): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+
+        val tags = JSONArray()
+        follows.forEach { followPubkey ->
+            tags.put(JSONArray().apply {
+                put("p")
+                put(followPubkey)
+            })
+        }
+
+        return JSONObject().apply {
+            put("kind", 3)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", tags)
+            put("content", "")
+        }.toString()
+    }
+
+    /**
+     * Handle the signed contact list event returned from Amber
+     */
+    fun handleAmberSignedContactList(signedEventJson: String) {
+        scope.launch {
+            try {
+                val event = Event.fromJson(signedEventJson)
+                nostrClient.publish(event)
+
+                // Update follow list based on pending action
+                pendingFollowPubkey?.let { pubkey ->
+                    val currentFollows = _followList.value.toMutableSet()
+                    when (pendingFollowAction) {
+                        FollowAction.FOLLOW -> currentFollows.add(pubkey)
+                        FollowAction.UNFOLLOW -> currentFollows.remove(pubkey)
+                        null -> {}
+                    }
+                    _followList.value = currentFollows
+                }
+            } catch (e: Exception) {
+                // Handle error - event parsing or publishing failed
+            } finally {
+                clearPendingFollowIntent()
+            }
+        }
+    }
+
+    /**
+     * Clear pending follow intent after it's been handled or cancelled
+     */
+    fun clearPendingFollowIntent() {
+        _pendingFollowIntent.value = null
+        pendingFollowPubkey = null
+        pendingFollowAction = null
     }
 
     // ==================== Helpers ====================

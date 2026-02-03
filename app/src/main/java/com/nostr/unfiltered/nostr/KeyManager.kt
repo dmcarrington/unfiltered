@@ -199,18 +199,14 @@ class KeyManager @Inject constructor(
     }
 
     /**
-     * Create intent to sign an event with Amber
+     * Create intent to sign an event with Amber (NIP-55)
+     * Uses Activity Result API format - no callbackUrl so Amber returns via setResult()
      */
     fun createAmberSignEventIntent(eventJson: String, eventId: String): Intent {
-        return Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.Builder()
-                .scheme("nostrsigner")
-                .authority("sign_event")
-                .appendQueryParameter("event", eventJson)
-                .appendQueryParameter("id", eventId)
-                .appendQueryParameter("callbackUrl", "nostr-unfiltered://callback")
-                .build()
-            addCategory(Intent.CATEGORY_BROWSABLE)
+        // NIP-55 format: nostrsigner:<event_json> with type extra
+        return Intent(Intent.ACTION_VIEW, Uri.parse("nostrsigner:$eventJson")).apply {
+            putExtra("type", "sign_event")
+            putExtra("id", eventId)
         }
     }
 
