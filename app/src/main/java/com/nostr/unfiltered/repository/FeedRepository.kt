@@ -88,6 +88,7 @@ class FeedRepository @Inject constructor(
 
         when (kind) {
             0 -> handleMetadataEvent(event)
+            1 -> handlePhotoPostEvent(event) // Kind 1 notes may contain images
             3 -> handleContactListEvent(event)
             7 -> handleReactionEvent(event)
             20 -> handlePhotoPostEvent(event)
@@ -337,13 +338,16 @@ class FeedRepository @Inject constructor(
             nostrClient.subscribe("my_reactions", listOf(myReactionsFilter))
         }
 
-        // Subscribe to global picture posts (kind 20) for now
-        // Once we have follows, we can filter by author
-        val feedFilter = Filter()
+        // Subscribe to global picture posts (kind 20) and text notes (kind 1) that may contain images
+        val feedFilterKind20 = Filter()
             .kind(Kind(20u))
             .limit(50u)
 
-        nostrClient.subscribe("feed", listOf(feedFilter))
+        val feedFilterKind1 = Filter()
+            .kind(Kind(1u))
+            .limit(50u)
+
+        nostrClient.subscribe("feed", listOf(feedFilterKind20, feedFilterKind1))
 
         _isLoading.value = false
     }
@@ -382,12 +386,18 @@ class FeedRepository @Inject constructor(
         }
 
         if (authors.isNotEmpty()) {
-            val feedFilter = Filter()
+            // Subscribe to Kind 20 (picture posts) and Kind 1 (text notes that may contain images)
+            val feedFilterKind20 = Filter()
                 .kind(Kind(20u))
                 .authors(authors)
                 .limit(100u)
 
-            nostrClient.subscribe("feed_follows", listOf(feedFilter))
+            val feedFilterKind1 = Filter()
+                .kind(Kind(1u))
+                .authors(authors)
+                .limit(100u)
+
+            nostrClient.subscribe("feed_follows", listOf(feedFilterKind20, feedFilterKind1))
 
             // Also fetch metadata for followed users
             val metadataFilter = Filter()
