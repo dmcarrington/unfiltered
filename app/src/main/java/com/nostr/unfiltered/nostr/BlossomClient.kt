@@ -10,6 +10,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import org.json.JSONArray
+import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Tag
@@ -41,6 +43,101 @@ class BlossomClient @Inject constructor(
         val size: Long,
         val mimeType: String
     )
+
+    /**
+     * Data prepared for upload, including the unsigned auth event for Amber signing
+     */
+    data class PreparedUpload(
+        val bytes: ByteArray,
+        val sha256: String,
+        val mimeType: String,
+        val unsignedAuthEvent: String
+    )
+
+    /**
+     * Prepare upload data and create unsigned authorization event for Amber signing
+     */
+    suspend fun prepareUpload(
+        context: Context,
+        imageUri: Uri
+    ): Result<PreparedUpload> = withContext(Dispatchers.IO) {
+        try {
+            val inputStream = context.contentResolver.openInputStream(imageUri)
+                ?: return@withContext Result.failure(Exception("Could not open image"))
+
+            val bytes = inputStream.use { it.readBytes() }
+            val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+            val sha256 = calculateSha256(bytes)
+            val unsignedAuthEvent = createUnsignedAuthorizationEvent(sha256, mimeType, bytes.size.toLong())
+
+            Result.success(PreparedUpload(bytes, sha256, mimeType, unsignedAuthEvent))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Complete upload with a signed authorization event (for Amber flow)
+     */
+    suspend fun uploadWithSignedAuth(
+        preparedUpload: PreparedUpload,
+        signedAuthEventJson: String
+    ): Result<UploadResult> = withContext(Dispatchers.IO) {
+        try {
+            // Base64 encode the signed event
+            val authHeader = android.util.Base64.encodeToString(
+                signedAuthEventJson.toByteArray(),
+                android.util.Base64.NO_WRAP
+            )
+
+            var lastError: Exception? = null
+            for (server in blossomServers) {
+                try {
+                    val result = uploadToServer(
+                        server,
+                        preparedUpload.bytes,
+                        preparedUpload.mimeType,
+                        authHeader
+                    )
+                    return@withContext Result.success(result.copy(sha256 = preparedUpload.sha256))
+                } catch (e: Exception) {
+                    lastError = e
+                    continue
+                }
+            }
+
+            Result.failure(lastError ?: Exception("All servers failed"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Create unsigned authorization event JSON for Amber signing
+     */
+    private fun createUnsignedAuthorizationEvent(
+        sha256: String,
+        mimeType: String,
+        size: Long
+    ): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+        val expiration = createdAt + 300 // 5 minutes
+
+        val tags = JSONArray().apply {
+            put(JSONArray().apply { put("t"); put("upload") })
+            put(JSONArray().apply { put("x"); put(sha256) })
+            put(JSONArray().apply { put("expiration"); put(expiration.toString()) })
+        }
+
+        return JSONObject().apply {
+            put("kind", 24242)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", tags)
+            put("content", "Upload $mimeType")
+        }.toString()
+    }
 
     suspend fun uploadImage(
         context: Context,

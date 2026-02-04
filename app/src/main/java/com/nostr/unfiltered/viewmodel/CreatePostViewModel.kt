@@ -1,6 +1,7 @@
 package com.nostr.unfiltered.viewmodel
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -14,6 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Tag
@@ -28,6 +32,13 @@ class CreatePostViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CreatePostUiState())
     val uiState: StateFlow<CreatePostUiState> = _uiState.asStateFlow()
+
+    // Amber signing flow state
+    private var pendingPreparedUpload: BlossomClient.PreparedUpload? = null
+    private var pendingUploadResult: BlossomClient.UploadResult? = null
+    private var pendingDimensions: Pair<Int, Int>? = null
+    private var pendingContext: Context? = null
+    private var pendingPostUnsignedEvent: String? = null
 
     fun setSelectedImage(uri: Uri) {
         _uiState.update { it.copy(selectedImageUri = uri, error = null) }
@@ -50,26 +61,113 @@ class CreatePostViewModel @Inject constructor(
             try {
                 // Get image dimensions
                 val dimensions = getImageDimensions(context, imageUri)
+                pendingDimensions = dimensions
+                pendingContext = context
 
-                // Upload to Blossom
-                val uploadResult = blossomClient.uploadImage(context, imageUri)
+                if (keyManager.isAmberConnected()) {
+                    // Amber flow: prepare upload and request auth signing
+                    val prepareResult = blossomClient.prepareUpload(context, imageUri)
+                    prepareResult.fold(
+                        onSuccess = { prepared ->
+                            pendingPreparedUpload = prepared
+                            val intent = keyManager.createAmberSignEventIntent(
+                                eventJson = prepared.unsignedAuthEvent,
+                                eventId = "blossom_auth"
+                            )
+                            _uiState.update {
+                                it.copy(
+                                    isUploading = false,
+                                    pendingAmberIntent = intent,
+                                    amberSigningStep = AmberSigningStep.AUTH
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            _uiState.update {
+                                it.copy(
+                                    isUploading = false,
+                                    error = error.message ?: "Failed to prepare upload"
+                                )
+                            }
+                        }
+                    )
+                } else {
+                    // Local keys flow: existing behavior
+                    val uploadResult = blossomClient.uploadImage(context, imageUri)
+
+                    uploadResult.fold(
+                        onSuccess = { result ->
+                            publishPhotoPost(
+                                imageUrl = result.url,
+                                sha256 = result.sha256,
+                                mimeType = result.mimeType,
+                                dimensions = dimensions,
+                                caption = _uiState.value.caption,
+                                altText = _uiState.value.altText
+                            )
+
+                            _uiState.update {
+                                it.copy(
+                                    isUploading = false,
+                                    isSuccess = true
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            _uiState.update {
+                                it.copy(
+                                    isUploading = false,
+                                    error = error.message ?: "Upload failed"
+                                )
+                            }
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isUploading = false,
+                        error = e.message ?: "Unknown error"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Handle signed authorization event from Amber - continue with upload
+     */
+    fun handleAmberSignedAuthEvent(signedEventJson: String) {
+        val prepared = pendingPreparedUpload ?: return
+
+        _uiState.update { it.copy(isUploading = true, pendingAmberIntent = null, amberSigningStep = null) }
+
+        viewModelScope.launch {
+            try {
+                val uploadResult = blossomClient.uploadWithSignedAuth(prepared, signedEventJson)
 
                 uploadResult.fold(
                     onSuccess = { result ->
-                        // Create and publish kind 20 event
-                        publishPhotoPost(
+                        pendingUploadResult = result
+                        // Now create unsigned post event for Amber signing
+                        val unsignedPostEvent = createUnsignedPhotoPostEvent(
                             imageUrl = result.url,
                             sha256 = result.sha256,
                             mimeType = result.mimeType,
-                            dimensions = dimensions,
+                            dimensions = pendingDimensions,
                             caption = _uiState.value.caption,
                             altText = _uiState.value.altText
                         )
-
+                        pendingPostUnsignedEvent = unsignedPostEvent
+                        val intent = keyManager.createAmberSignEventIntent(
+                            eventJson = unsignedPostEvent,
+                            eventId = "photo_post"
+                        )
                         _uiState.update {
                             it.copy(
                                 isUploading = false,
-                                isSuccess = true
+                                pendingAmberIntent = intent,
+                                amberSigningStep = AmberSigningStep.POST
                             )
                         }
                     },
@@ -80,17 +178,184 @@ class CreatePostViewModel @Inject constructor(
                                 error = error.message ?: "Upload failed"
                             )
                         }
+                        clearPendingState()
                     }
                 )
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isUploading = false,
-                        error = e.message ?: "Unknown error"
+                        error = e.message ?: "Upload failed"
                     )
                 }
+                clearPendingState()
             }
         }
+    }
+
+    /**
+     * Handle signed post event from Amber - publish to relays.
+     * Amber may return either:
+     * - Full signed event JSON (with "id" and "sig" fields)
+     * - Just the signature (hex string)
+     */
+    fun handleAmberSignedPostEvent(signedEventJson: String) {
+        viewModelScope.launch {
+            try {
+                val event = try {
+                    // First, try to parse as a full signed event
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    // If that fails, it might be just a signature - reconstruct the event
+                    reconstructSignedEvent(signedEventJson)
+                }
+
+                if (event != null) {
+                    nostrClient.publish(event)
+                    _uiState.update {
+                        it.copy(
+                            pendingAmberIntent = null,
+                            amberSigningStep = null,
+                            isSuccess = true
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            pendingAmberIntent = null,
+                            amberSigningStep = null,
+                            error = "Failed to reconstruct signed event"
+                        )
+                    }
+                }
+                clearPendingState()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        pendingAmberIntent = null,
+                        amberSigningStep = null,
+                        error = e.message ?: "Failed to publish post"
+                    )
+                }
+                clearPendingState()
+            }
+        }
+    }
+
+    /**
+     * Reconstruct a signed event from a signature and the stored unsigned event.
+     */
+    private fun reconstructSignedEvent(signature: String): Event? {
+        val unsignedJson = pendingPostUnsignedEvent ?: return null
+
+        return try {
+            val eventObj = JSONObject(unsignedJson)
+
+            // Compute the event ID (sha256 of serialized event)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+
+            // Add id and sig to create signed event
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun computeEventSerialization(event: JSONObject): String {
+        val kind = event.getInt("kind")
+        val pubkey = event.getString("pubkey")
+        val createdAt = event.getLong("created_at")
+        val tags = event.getJSONArray("tags")
+        val content = event.getString("content")
+
+        // NIP-01 serialization: [0,<pubkey>,<created_at>,<kind>,<tags>,<content>]
+        return "[0,\"$pubkey\",$createdAt,$kind,$tags,\"${escapeJsonString(content)}\"]"
+    }
+
+    private fun escapeJsonString(str: String): String {
+        return str
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    private fun computeSha256Hex(input: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Clear pending Amber intent (user cancelled)
+     */
+    fun clearPendingAmberIntent() {
+        _uiState.update {
+            it.copy(
+                pendingAmberIntent = null,
+                amberSigningStep = null,
+                isUploading = false
+            )
+        }
+        clearPendingState()
+    }
+
+    private fun clearPendingState() {
+        pendingPreparedUpload = null
+        pendingUploadResult = null
+        pendingDimensions = null
+        pendingContext = null
+        pendingPostUnsignedEvent = null
+    }
+
+    /**
+     * Create unsigned kind 20 photo post event for Amber signing
+     */
+    private fun createUnsignedPhotoPostEvent(
+        imageUrl: String,
+        sha256: String,
+        mimeType: String,
+        dimensions: Pair<Int, Int>?,
+        caption: String,
+        altText: String
+    ): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+
+        // Build imeta tag
+        val imetaTag = JSONArray().apply {
+            put("imeta")
+            put("url $imageUrl")
+            if (sha256.isNotEmpty()) put("x $sha256")
+            if (mimeType.isNotEmpty()) put("m $mimeType")
+            dimensions?.let { (w, h) ->
+                if (w > 0 && h > 0) put("dim ${w}x${h}")
+            }
+            if (altText.isNotBlank()) put("alt $altText")
+        }
+
+        val tags = JSONArray().apply {
+            put(imetaTag)
+            if (caption.isNotBlank() && caption.length <= 100) {
+                put(JSONArray().apply {
+                    put("title")
+                    put(caption.take(100))
+                })
+            }
+        }
+
+        return JSONObject().apply {
+            put("kind", 20)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", tags)
+            put("content", caption)
+        }.toString()
     }
 
     private fun publishPhotoPost(
@@ -160,7 +425,13 @@ class CreatePostViewModel @Inject constructor(
 
     fun resetState() {
         _uiState.value = CreatePostUiState()
+        clearPendingState()
     }
+}
+
+enum class AmberSigningStep {
+    AUTH,  // Signing Blossom authorization event
+    POST   // Signing photo post event
 }
 
 data class CreatePostUiState(
@@ -169,5 +440,7 @@ data class CreatePostUiState(
     val altText: String = "",
     val isUploading: Boolean = false,
     val isSuccess: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val pendingAmberIntent: Intent? = null,
+    val amberSigningStep: AmberSigningStep? = null
 )

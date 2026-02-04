@@ -18,6 +18,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class FeedMode {
+    FOLLOWING,
+    TRENDING
+}
+
 @HiltViewModel
 class FeedViewModel @Inject constructor(
     private val nostrClient: NostrClient,
@@ -44,20 +49,55 @@ class FeedViewModel @Inject constructor(
     private val _zapState = MutableStateFlow<ZapState>(ZapState.Idle)
     val zapState: StateFlow<ZapState> = _zapState.asStateFlow()
 
+    // Amber like signing flow
+    val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
+
+    private val _feedMode = MutableStateFlow(FeedMode.TRENDING)
+    val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
+
+    /**
+     * Calculate trending score with time decay.
+     * Recent posts are boosted; older posts need more likes to rank high.
+     * Formula: score = (likeCount + 1) / (1 + hoursOld / 6)
+     */
+    private fun calculateTrendingScore(post: PhotoPost): Double {
+        val now = System.currentTimeMillis() / 1000
+        val ageSeconds = (now - post.createdAt).coerceAtLeast(0)
+        val ageHours = ageSeconds / 3600.0
+        return (post.likeCount + 1).toDouble() / (1.0 + ageHours / 6.0)
+    }
+
     val uiState: StateFlow<FeedUiState> = combine(
         posts,
         connectionState,
         isLoading,
         _isRefreshing,
-        _canZap
-    ) { posts, connectionState, isLoading, isRefreshing, canZap ->
+        _canZap,
+        _feedMode,
+        feedRepository.followList
+    ) { values ->
+        val posts = values[0] as List<PhotoPost>
+        val connectionState = values[1] as NostrClient.ConnectionState
+        val isLoading = values[2] as Boolean
+        val isRefreshing = values[3] as Boolean
+        val canZap = values[4] as Boolean
+        val feedMode = values[5] as FeedMode
+        val follows = values[6] as Set<String>
+
+        val sortedPosts = when (feedMode) {
+            FeedMode.TRENDING -> posts.sortedByDescending { calculateTrendingScore(it) }
+            FeedMode.FOLLOWING -> posts.sortedByDescending { it.createdAt }
+        }
+
         FeedUiState(
-            posts = posts,
+            posts = sortedPosts,
             isLoading = isLoading,
             isRefreshing = isRefreshing,
             isConnected = connectionState == NostrClient.ConnectionState.Connected,
-            isEmpty = posts.isEmpty() && !isLoading,
-            canZap = canZap
+            isEmpty = sortedPosts.isEmpty() && !isLoading,
+            canZap = canZap,
+            feedMode = feedMode,
+            hasFollows = follows.isNotEmpty()
         )
     }.stateIn(
         viewModelScope,
@@ -69,6 +109,30 @@ class FeedViewModel @Inject constructor(
         observeRelayStatus()
         ensureConnectedAndSubscribe()
         checkZapAvailability()
+        setDefaultFeedMode()
+    }
+
+    private fun setDefaultFeedMode() {
+        viewModelScope.launch {
+            // Wait briefly for follow list to load
+            kotlinx.coroutines.delay(1000)
+            val hasFollows = feedRepository.followList.value.isNotEmpty()
+            if (hasFollows && _feedMode.value == FeedMode.TRENDING) {
+                setFeedMode(FeedMode.FOLLOWING)
+            }
+        }
+    }
+
+    fun setFeedMode(mode: FeedMode) {
+        if (_feedMode.value == mode) return
+        _feedMode.value = mode
+        viewModelScope.launch {
+            feedRepository.clearCache()
+            when (mode) {
+                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.TRENDING -> feedRepository.subscribeToFeed()
+            }
+        }
     }
 
     private fun checkZapAvailability() {
@@ -117,13 +181,24 @@ class FeedViewModel @Inject constructor(
         viewModelScope.launch {
             _isRefreshing.value = true
             feedRepository.clearCache()
-            feedRepository.subscribeToFeed()
+            when (_feedMode.value) {
+                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.TRENDING -> feedRepository.subscribeToFeed()
+            }
             _isRefreshing.value = false
         }
     }
 
     fun likePost(post: PhotoPost) {
         feedRepository.likePost(post)
+    }
+
+    fun handleAmberSignedLike(signedEventJson: String) {
+        feedRepository.handleAmberSignedLike(signedEventJson)
+    }
+
+    fun clearPendingLikeIntent() {
+        feedRepository.clearPendingLikeIntent()
     }
 
     fun loadMorePosts() {
@@ -214,5 +289,7 @@ data class FeedUiState(
     val isConnected: Boolean = false,
     val isEmpty: Boolean = true,
     val error: String? = null,
-    val canZap: Boolean = false
+    val canZap: Boolean = false,
+    val feedMode: FeedMode = FeedMode.TRENDING,
+    val hasFollows: Boolean = false
 )

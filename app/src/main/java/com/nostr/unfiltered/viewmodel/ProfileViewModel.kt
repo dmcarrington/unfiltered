@@ -1,5 +1,6 @@
 package com.nostr.unfiltered.viewmodel
 
+import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.KeyManager
@@ -49,9 +50,21 @@ class ProfileViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            // Check if already following
+            // Observe follow list for isFollowing status and count
             feedRepository.followList.collect { follows ->
-                _uiState.update { it.copy(isFollowing = follows.contains(pubkey)) }
+                _uiState.update { state ->
+                    state.copy(
+                        isFollowing = follows.contains(pubkey),
+                        followingCount = if (state.isOwnProfile) follows.size else state.followingCount
+                    )
+                }
+            }
+        }
+
+        // Observe pending Amber follow intent
+        viewModelScope.launch {
+            feedRepository.pendingFollowIntent.collect { intent ->
+                _uiState.update { it.copy(pendingFollowIntent = intent) }
             }
         }
 
@@ -247,6 +260,20 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Handle the signed contact list event returned from Amber
+     */
+    fun handleAmberSignedFollow(signedEventJson: String) {
+        feedRepository.handleAmberSignedContactList(signedEventJson)
+    }
+
+    /**
+     * Clear pending follow intent after it's been handled or cancelled
+     */
+    fun clearPendingFollowIntent() {
+        feedRepository.clearPendingFollowIntent()
+    }
+
     override fun onCleared() {
         super.onCleared()
         currentPubkey?.let { pubkey ->
@@ -264,5 +291,7 @@ data class ProfileUiState(
     val posts: List<PhotoPost> = emptyList(),
     val isFollowing: Boolean = false,
     val isOwnProfile: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val followingCount: Int = 0,
+    val pendingFollowIntent: Intent? = null
 )

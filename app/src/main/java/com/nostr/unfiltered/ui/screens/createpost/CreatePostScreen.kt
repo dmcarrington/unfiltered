@@ -1,5 +1,6 @@
 package com.nostr.unfiltered.ui.screens.createpost
 
+import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -50,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.nostr.unfiltered.viewmodel.AmberSigningStep
 import com.nostr.unfiltered.viewmodel.CreatePostViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -67,6 +69,36 @@ fun CreatePostScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         uri?.let { viewModel.setSelectedImage(it) }
+    }
+
+    // Amber signing launcher
+    val amberLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // Amber may return signed event under different extra keys
+            val signedEvent = result.data?.getStringExtra("event")
+                ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
+            if (signedEvent != null) {
+                when (uiState.amberSigningStep) {
+                    AmberSigningStep.AUTH -> viewModel.handleAmberSignedAuthEvent(signedEvent)
+                    AmberSigningStep.POST -> viewModel.handleAmberSignedPostEvent(signedEvent)
+                    null -> viewModel.clearPendingAmberIntent()
+                }
+            } else {
+                viewModel.clearPendingAmberIntent()
+            }
+        } else {
+            viewModel.clearPendingAmberIntent()
+        }
+    }
+
+    // Launch Amber when pending intent is set
+    LaunchedEffect(uiState.pendingAmberIntent) {
+        uiState.pendingAmberIntent?.let { intent ->
+            amberLauncher.launch(intent)
+        }
     }
 
     // Handle success

@@ -1,5 +1,8 @@
 package com.nostr.unfiltered.ui.screens.profile
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +58,32 @@ fun ProfileScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
+    // Amber signing launcher for follow/unfollow
+    val amberLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // Amber returns the signed event in various possible extras
+            val signedEvent = result.data?.getStringExtra("event")
+                ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
+            if (signedEvent != null) {
+                viewModel.handleAmberSignedFollow(signedEvent)
+            } else {
+                viewModel.clearPendingFollowIntent()
+            }
+        } else {
+            viewModel.clearPendingFollowIntent()
+        }
+    }
+
+    // Launch Amber when a pending follow intent is set
+    LaunchedEffect(uiState.pendingFollowIntent) {
+        uiState.pendingFollowIntent?.let { intent ->
+            amberLauncher.launch(intent)
+        }
+    }
+
     LaunchedEffect(pubkey) {
         viewModel.loadProfile(pubkey)
     }
@@ -103,6 +132,7 @@ fun ProfileScreen(
                     about = uiState.metadata?.about,
                     npub = uiState.npub,
                     postsCount = uiState.posts.size,
+                    followingCount = uiState.followingCount,
                     isFollowing = uiState.isFollowing,
                     isOwnProfile = uiState.isOwnProfile,
                     onFollowClick = { viewModel.toggleFollow() }
@@ -155,6 +185,7 @@ private fun ProfileHeader(
     about: String?,
     npub: String,
     postsCount: Int,
+    followingCount: Int,
     isFollowing: Boolean,
     isOwnProfile: Boolean,
     onFollowClick: () -> Unit
@@ -221,7 +252,9 @@ private fun ProfileHeader(
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
             StatItem(value = postsCount.toString(), label = "posts")
-            // Could add followers/following counts when implemented
+            if (isOwnProfile) {
+                StatItem(value = followingCount.toString(), label = "following")
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))

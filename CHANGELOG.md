@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.2] - 2026-02-03
+
+### New Features
+
+- **Follow/Unfollow Users**: Added ability to follow and unfollow users from their profile page. Follow status syncs with your Nostr contact list (kind 3 events) and works with both Amber and local key signing.
+
+- **Following Feed**: New "Following" feed mode shows posts only from users you follow. The app defaults to Following feed when you have follows, with a dropdown to switch between Following and Trending.
+
+### Bug Fixes
+
+- **Amber Like Signing**: Fixed like button not working when signed in with Amber. The app now correctly handles both full signed event JSON and signature-only responses from Amber.
+
+- **Like State Persistence**: Fixed liked posts not showing as liked after refresh or navigation. The app now subscribes to your own reactions (kind 7 events) to track and persist liked state.
+
+- **Amber Signing Consistency**: Applied the same signing fixes across all Amber operations including follow/unfollow, create post, and profile editing.
+
 ## [1.0.1] - 2026-02-02
 
 ### Bug Fixes
