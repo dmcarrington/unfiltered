@@ -84,6 +84,7 @@ fun CreatePostScreen(
                 when (uiState.amberSigningStep) {
                     AmberSigningStep.AUTH -> viewModel.handleAmberSignedAuthEvent(signedEvent)
                     AmberSigningStep.POST -> viewModel.handleAmberSignedPostEvent(signedEvent)
+                    AmberSigningStep.POST_KIND1 -> viewModel.handleAmberSignedKind1Event(signedEvent)
                     null -> viewModel.clearPendingAmberIntent()
                 }
             } else {
