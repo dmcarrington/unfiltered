@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -253,7 +255,8 @@ fun SettingsScreen(
                         uiState.relayStatuses.forEachIndexed { index, relay ->
                             RelayItem(
                                 relay = relay,
-                                onRemove = { viewModel.removeRelay(relay.url) }
+                                onRemove = { viewModel.removeRelay(relay.url) },
+                                onReconnect = { viewModel.reconnectRelay(relay.url) }
                             )
                             if (index < uiState.relayStatuses.size - 1) {
                                 HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
@@ -451,11 +454,19 @@ private fun NwcConnectionDialog(
 @Composable
 private fun RelayItem(
     relay: RelayInfo,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onReconnect: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (!relay.isConnected) {
+                    Modifier.clickable(onClick = onReconnect)
+                } else {
+                    Modifier
+                }
+            )
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -476,10 +487,24 @@ private fun RelayItem(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = relay.status,
+                text = if (!relay.isConnected) "${relay.status} - Tap to reconnect" else relay.status,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary
             )
+        }
+
+        if (!relay.isConnected) {
+            IconButton(
+                onClick = onReconnect,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Reconnect",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
         }
 
         IconButton(
