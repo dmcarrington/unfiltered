@@ -319,6 +319,9 @@ class FeedRepository @Inject constructor(
     fun subscribeToFeed() {
         _isLoading.value = true
 
+        // Unsubscribe from followed feed if switching modes
+        nostrClient.unsubscribe("feed_follows")
+
         // First, load our follow list and our own reactions
         val myPubkey = keyManager.getPublicKeyHex()
         if (myPubkey != null) {
