@@ -1,20 +1,22 @@
 package com.nostr.unfiltered.nostr
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
-import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Tag
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -65,8 +67,12 @@ class BlossomClient @Inject constructor(
             val inputStream = context.contentResolver.openInputStream(imageUri)
                 ?: return@withContext Result.failure(Exception("Could not open image"))
 
-            val bytes = inputStream.use { it.readBytes() }
+            val rawBytes = inputStream.use { it.readBytes() }
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+
+            // Strip EXIF metadata (location, camera info, etc.) for privacy
+            val bytes = stripExifMetadata(rawBytes, mimeType)
+
             val sha256 = calculateSha256(bytes)
             val unsignedAuthEvent = createUnsignedAuthorizationEvent(sha256, mimeType, bytes.size.toLong())
 
@@ -148,10 +154,13 @@ class BlossomClient @Inject constructor(
             val inputStream = context.contentResolver.openInputStream(imageUri)
                 ?: return@withContext Result.failure(Exception("Could not open image"))
 
-            val bytes = inputStream.use { it.readBytes() }
+            val rawBytes = inputStream.use { it.readBytes() }
 
             // Get mime type
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+
+            // Strip EXIF metadata (location, camera info, etc.) for privacy
+            val bytes = stripExifMetadata(rawBytes, mimeType)
 
             // Calculate SHA-256 hash
             val sha256 = calculateSha256(bytes)
@@ -243,5 +252,43 @@ class BlossomClient @Inject constructor(
         val digest = MessageDigest.getInstance("SHA-256")
         val hashBytes = digest.digest(bytes)
         return hashBytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Strip EXIF metadata from image bytes for privacy.
+     * Removes location data, camera info, timestamps, and other sensitive metadata.
+     * Works by decoding to Bitmap (which doesn't preserve EXIF) and re-encoding.
+     */
+    @Suppress("DEPRECATION")
+    private fun stripExifMetadata(bytes: ByteArray, mimeType: String): ByteArray {
+        return try {
+            // Decode the image to a Bitmap (this naturally strips EXIF data)
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: return bytes // Return original if decode fails
+
+            // Determine output format based on mime type
+            val format = when {
+                mimeType.contains("png", ignoreCase = true) -> Bitmap.CompressFormat.PNG
+                mimeType.contains("webp", ignoreCase = true) -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        Bitmap.CompressFormat.WEBP_LOSSY
+                    } else {
+                        Bitmap.CompressFormat.WEBP
+                    }
+                }
+                else -> Bitmap.CompressFormat.JPEG
+            }
+
+            // Re-encode the bitmap without EXIF data
+            val outputStream = ByteArrayOutputStream()
+            val quality = if (format == Bitmap.CompressFormat.PNG) 100 else 95
+            bitmap.compress(format, quality, outputStream)
+            bitmap.recycle()
+
+            outputStream.toByteArray()
+        } catch (e: Exception) {
+            // If stripping fails, return original bytes rather than failing the upload
+            bytes
+        }
     }
 }
