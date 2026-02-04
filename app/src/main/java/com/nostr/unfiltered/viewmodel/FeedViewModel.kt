@@ -180,6 +180,8 @@ class FeedViewModel @Inject constructor(
     fun refresh() {
         viewModelScope.launch {
             _isRefreshing.value = true
+            // Reconnect any failed/disconnected relays before refreshing
+            nostrClient.reconnect()
             feedRepository.clearCache()
             when (_feedMode.value) {
                 FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
