@@ -300,15 +300,27 @@ class FeedRepository @Inject constructor(
             imageUrl = tags.find { it.size >= 2 && it[0] == "image" }?.get(1)
         }
 
-        // Check content for image URL if still not found
+        // Check content for image or video URL if still not found
         if (imageUrl == null) {
             val content = event.content()
-            val urlRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
-            imageUrl = urlRegex.find(content)?.value
+            // Try image first
+            val imageRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
+            imageUrl = imageRegex.find(content)?.value
+
+            // Try video if no image found
+            if (imageUrl == null) {
+                val videoRegex = Regex("https?://[^\\s]+\\.(mp4|webm|mov|m4v)", RegexOption.IGNORE_CASE)
+                imageUrl = videoRegex.find(content)?.value
+            }
         }
 
-        // Must have an image URL
+        // Must have a media URL
         if (imageUrl == null) return null
+
+        // Determine if this is a video based on file extension
+        val isVideo = imageUrl.lowercase().let { url ->
+            url.endsWith(".mp4") || url.endsWith(".webm") || url.endsWith(".mov") || url.endsWith(".m4v")
+        }
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val authorPubkey = event.author().toHex()
@@ -326,6 +338,7 @@ class FeedRepository @Inject constructor(
             dimensions = dimensions,
             altText = altText,
             fallbackUrls = fallbackUrls,
+            isVideo = isVideo,
             authorName = metadata?.bestName,
             authorAvatar = metadata?.picture,
             authorNip05 = metadata?.nip05,

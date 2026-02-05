@@ -3,6 +3,7 @@ package com.nostr.unfiltered.viewmodel
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -41,8 +42,15 @@ class CreatePostViewModel @Inject constructor(
     private var pendingPostUnsignedEvent: String? = null
     private var pendingKind1UnsignedEvent: String? = null
 
+    fun setSelectedMedia(context: Context, uri: Uri) {
+        val mimeType = context.contentResolver.getType(uri) ?: ""
+        val isVideo = mimeType.startsWith("video/")
+        _uiState.update { it.copy(selectedImageUri = uri, isVideo = isVideo, error = null) }
+    }
+
+    // Keep for backwards compatibility
     fun setSelectedImage(uri: Uri) {
-        _uiState.update { it.copy(selectedImageUri = uri, error = null) }
+        _uiState.update { it.copy(selectedImageUri = uri, isVideo = false, error = null) }
     }
 
     fun setCaption(caption: String) {
@@ -55,13 +63,18 @@ class CreatePostViewModel @Inject constructor(
 
     fun createPost(context: Context) {
         val imageUri = _uiState.value.selectedImageUri ?: return
+        val isVideo = _uiState.value.isVideo
 
         _uiState.update { it.copy(isUploading = true, error = null) }
 
         viewModelScope.launch {
             try {
-                // Get image dimensions
-                val dimensions = getImageDimensions(context, imageUri)
+                // Get media dimensions
+                val dimensions = if (isVideo) {
+                    getVideoDimensions(context, imageUri)
+                } else {
+                    getImageDimensions(context, imageUri)
+                }
                 pendingDimensions = dimensions
                 pendingContext = context
 
@@ -541,6 +554,23 @@ class CreatePostViewModel @Inject constructor(
         }
     }
 
+    private fun getVideoDimensions(context: Context, uri: Uri): Pair<Int, Int>? {
+        return try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(context, uri)
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            retriever.release()
+            if (width != null && height != null && width > 0 && height > 0) {
+                Pair(width, height)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun resetState() {
         _uiState.value = CreatePostUiState()
         clearPendingState()
@@ -555,6 +585,7 @@ enum class AmberSigningStep {
 
 data class CreatePostUiState(
     val selectedImageUri: Uri? = null,
+    val isVideo: Boolean = false,
     val caption: String = "",
     val altText: String = "",
     val isUploading: Boolean = false,

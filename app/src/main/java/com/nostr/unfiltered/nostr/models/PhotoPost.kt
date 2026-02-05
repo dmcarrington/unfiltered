@@ -14,6 +14,7 @@ data class PhotoPost(
     val dimensions: ImageDimensions? = null,
     val altText: String? = null,
     val fallbackUrls: List<String> = emptyList(),
+    val isVideo: Boolean = false,
 
     // Populated from author's metadata
     val authorName: String? = null,
