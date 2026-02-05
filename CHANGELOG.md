@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.3] - 2026-02-05
+
+### New Features
+
+- **Fullscreen Image Viewer**: Tap on any image to view it fullscreen.
+
+### Bug Fixes
+
+- **Relay Connection Stability**: Fixed issues with losing connection to relays, improving overall reliability.
+
+- **Image Rotation**: Fixed images appearing rotated incorrectly by properly handling EXIF orientation data.
+
+- **EXIF Privacy**: Images now have EXIF metadata stripped before uploading, protecting location and device information.
+
+- **Kind 1 Post Interoperability**: Added support for displaying images from standard kind 1 text notes, improving compatibility with other Nostr clients.
+
 ## [1.0.2] - 2026-02-03
 
 ### New Features
