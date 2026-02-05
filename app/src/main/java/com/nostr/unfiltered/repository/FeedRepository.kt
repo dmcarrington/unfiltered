@@ -574,6 +574,10 @@ class FeedRepository @Inject constructor(
             .sortedByDescending { it.createdAt }
     }
 
+    fun getPostImageUrl(postId: String): String? {
+        return postsCache[postId]?.imageUrl
+    }
+
     // ==================== Actions ====================
 
     fun likePost(post: PhotoPost) {

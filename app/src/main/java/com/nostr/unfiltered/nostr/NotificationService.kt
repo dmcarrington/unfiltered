@@ -48,7 +48,7 @@ class NotificationService @Inject constructor(
         if (jsonStr != null) {
             try {
                 val loaded = json.decodeFromString<List<Notification>>(jsonStr)
-                _notifications.value = loaded
+                _notifications.value = loaded.sortedByDescending { it.timestamp }
                 seenNotificationIds.addAll(loaded.map { it.id })
             } catch (e: Exception) {
                 // Invalid JSON, start fresh
@@ -60,8 +60,10 @@ class NotificationService @Inject constructor(
         if (seenNotificationIds.contains(notification.id)) return
         seenNotificationIds.add(notification.id)
 
-        val updated = listOf(notification) + _notifications.value
-        _notifications.value = updated.take(100) // Keep last 100
+        val updated = (_notifications.value + notification)
+            .sortedByDescending { it.timestamp }
+            .take(100) // Keep most recent 100
+        _notifications.value = updated
 
         _hasUnread.value = true
         persistState()

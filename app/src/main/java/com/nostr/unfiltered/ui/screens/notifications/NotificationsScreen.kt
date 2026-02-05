@@ -1,6 +1,7 @@
 package com.nostr.unfiltered.ui.screens.notifications
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
@@ -33,6 +36,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +55,12 @@ import com.nostr.unfiltered.nostr.models.Notification
 import com.nostr.unfiltered.nostr.models.NotificationType
 import com.nostr.unfiltered.viewmodel.NotificationsViewModel
 
+data class PostPreviewData(
+    val imageUrl: String?,
+    val content: String?,
+    val authorName: String?
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NotificationsScreen(
@@ -54,10 +68,21 @@ fun NotificationsScreen(
     viewModel: NotificationsViewModel = hiltViewModel()
 ) {
     val notifications by viewModel.notifications.collectAsState()
+    var selectedPreview by remember { mutableStateOf<PostPreviewData?>(null) }
 
     // Mark as read when screen is displayed
     LaunchedEffect(Unit) {
         viewModel.markAsRead()
+    }
+
+    // Post preview dialog
+    selectedPreview?.let { preview ->
+        PostPreviewDialog(
+            imageUrl = preview.imageUrl,
+            content = preview.content,
+            authorName = preview.authorName,
+            onDismiss = { selectedPreview = null }
+        )
     }
 
     Scaffold(
@@ -88,7 +113,26 @@ fun NotificationsScreen(
                     items = notifications,
                     key = { it.id }
                 ) { notification ->
-                    NotificationItem(notification = notification)
+                    NotificationItem(
+                        notification = notification,
+                        onClick = {
+                            // Only show preview for reactions and mentions
+                            if (notification.type != NotificationType.ZAP) {
+                                val imageUrl = notification.targetPostImageUrl
+                                    ?: viewModel.getPostImageUrl(notification.targetPostId)
+                                val content = notification.targetPostContent
+
+                                // Show dialog if we have content or an image
+                                if (content != null || imageUrl != null) {
+                                    selectedPreview = PostPreviewData(
+                                        imageUrl = imageUrl,
+                                        content = content,
+                                        authorName = notification.actorName
+                                    )
+                                }
+                            }
+                        }
+                    )
                     HorizontalDivider()
                 }
             }
@@ -97,10 +141,84 @@ fun NotificationsScreen(
 }
 
 @Composable
-private fun NotificationItem(notification: Notification) {
+private fun PostPreviewDialog(
+    imageUrl: String?,
+    content: String?,
+    authorName: String?,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.9f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Show author name if available
+                if (authorName != null) {
+                    Text(
+                        text = authorName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+                }
+
+                // Show text content if available
+                if (content != null) {
+                    Text(
+                        text = content,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = if (imageUrl != null) 16.dp else 0.dp)
+                    )
+                }
+
+                // Show image if available
+                if (imageUrl != null) {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = "Post image",
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationItem(
+    notification: Notification,
+    onClick: () -> Unit
+) {
+    // Make reactions and mentions clickable (not zaps)
+    val isClickable = notification.type != NotificationType.ZAP
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (isClickable) Modifier.clickable(onClick = onClick)
+                else Modifier
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

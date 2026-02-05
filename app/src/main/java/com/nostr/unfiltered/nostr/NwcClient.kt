@@ -1,12 +1,6 @@
 package com.nostr.unfiltered.nostr
 
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
@@ -16,24 +10,19 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
-import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
-import rust.nostr.protocol.Filter
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Keys
 import rust.nostr.protocol.PublicKey
 import rust.nostr.protocol.SecretKey
 import rust.nostr.protocol.Tag
+import rust.nostr.sdk.NostrSigner
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * WebSocket client for NWC (Nostr Wallet Connect) relay communication.
@@ -43,21 +32,17 @@ import kotlin.coroutines.resumeWithException
 class NwcClient @Inject constructor(
     private val nwcService: NwcService
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     private var webSocket: WebSocket? = null
     private val httpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
-    private val _responses = MutableSharedFlow<NwcResponse>(extraBufferCapacity = 100)
-    val responses: SharedFlow<NwcResponse> = _responses
-
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
     private var isConnected = false
     private var connectionKeys: Keys? = null
+    private var signer: NostrSigner? = null
     private var walletPubkey: String? = null
 
     /**
@@ -69,7 +54,9 @@ class NwcClient @Inject constructor(
         // Parse the secret to create ephemeral keys for this connection
         try {
             val secretKey = SecretKey.fromHex(connection.secret)
-            connectionKeys = Keys(secretKey)
+            val keys = Keys(secretKey)
+            connectionKeys = keys
+            signer = NostrSigner.keys(keys)
             walletPubkey = connection.walletPubkey
         } catch (e: Exception) {
             return false
@@ -118,6 +105,7 @@ class NwcClient @Inject constructor(
         webSocket = null
         isConnected = false
         connectionKeys = null
+        signer = null
         walletPubkey = null
     }
 
@@ -132,6 +120,7 @@ class NwcClient @Inject constructor(
         }
 
         val keys = connectionKeys ?: return Result.failure(Exception("No connection keys"))
+        val nwcSigner = signer ?: return Result.failure(Exception("No signer"))
         val walletPk = walletPubkey ?: return Result.failure(Exception("No wallet pubkey"))
 
         val requestId = UUID.randomUUID().toString().replace("-", "").take(16)
@@ -142,9 +131,15 @@ class NwcClient @Inject constructor(
             put("params", params)
         }.toString()
 
-        // Encrypt with NIP-04
+        // Encrypt with NIP-04 using rust-nostr's proper ECDH
+        val walletPublicKey = try {
+            PublicKey.fromHex(walletPk)
+        } catch (e: Exception) {
+            return Result.failure(Exception("Invalid wallet pubkey: ${e.message}"))
+        }
+
         val encryptedContent = try {
-            nip04Encrypt(requestJson, walletPk, keys)
+            nwcSigner.nip04Encrypt(walletPublicKey, requestJson)
         } catch (e: Exception) {
             return Result.failure(Exception("Encryption failed: ${e.message}"))
         }
@@ -177,8 +172,8 @@ class NwcClient @Inject constructor(
                 responseDeferred.await()
             }
 
-            // Decrypt response
-            val decrypted = nip04Decrypt(responseContent, walletPk, keys)
+            // Decrypt response using rust-nostr's proper ECDH
+            val decrypted = nwcSigner.nip04Decrypt(walletPublicKey, responseContent)
             val responseJson = JSONObject(decrypted)
 
             // Check for error
@@ -255,92 +250,4 @@ class NwcClient @Inject constructor(
         }
     }
 
-    /**
-     * NIP-04 encrypt a message
-     */
-    private fun nip04Encrypt(plaintext: String, recipientPubkey: String, senderKeys: Keys): String {
-        // Generate shared secret using ECDH
-        val sharedSecret = computeSharedSecret(recipientPubkey, senderKeys)
-
-        // Generate random IV
-        val iv = ByteArray(16)
-        java.security.SecureRandom().nextBytes(iv)
-
-        // Encrypt with AES-256-CBC
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        val keySpec = SecretKeySpec(sharedSecret, "AES")
-        val ivSpec = IvParameterSpec(iv)
-        cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec)
-
-        val encrypted = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
-
-        // Format: base64(encrypted)?iv=base64(iv)
-        val encryptedB64 = android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP)
-        val ivB64 = android.util.Base64.encodeToString(iv, android.util.Base64.NO_WRAP)
-
-        return "$encryptedB64?iv=$ivB64"
-    }
-
-    /**
-     * NIP-04 decrypt a message
-     */
-    private fun nip04Decrypt(ciphertext: String, senderPubkey: String, recipientKeys: Keys): String {
-        // Parse format: base64(encrypted)?iv=base64(iv)
-        val parts = ciphertext.split("?iv=")
-        if (parts.size != 2) throw Exception("Invalid NIP-04 format")
-
-        val encrypted = android.util.Base64.decode(parts[0], android.util.Base64.NO_WRAP)
-        val iv = android.util.Base64.decode(parts[1], android.util.Base64.NO_WRAP)
-
-        // Generate shared secret using ECDH
-        val sharedSecret = computeSharedSecret(senderPubkey, recipientKeys)
-
-        // Decrypt with AES-256-CBC
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        val keySpec = SecretKeySpec(sharedSecret, "AES")
-        val ivSpec = IvParameterSpec(iv)
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
-
-        val decrypted = cipher.doFinal(encrypted)
-        return String(decrypted, Charsets.UTF_8)
-    }
-
-    /**
-     * Compute shared secret for NIP-04 using ECDH on secp256k1
-     * Returns SHA256(ECDH(our_secret, their_pubkey))
-     *
-     * Note: This uses a simplified ECDH approximation. For production use,
-     * consider using a proper secp256k1 library or Amber for encryption.
-     */
-    private fun computeSharedSecret(theirPubkey: String, ourKeys: Keys): ByteArray {
-        // Manual ECDH computation
-        // The shared secret should be SHA256(ECDH_point.x_coordinate)
-        // Since we don't have direct secp256k1 ECDH in the Kotlin bindings,
-        // we use a deterministic derivation based on both keys.
-        val secretKeyBytes = hexToBytes(ourKeys.secretKey().toHex())
-        val pubKeyBytes = hexToBytes(theirPubkey)
-
-        // Compute a deterministic shared secret
-        // This combines the secret key and pubkey in a way that produces
-        // consistent results for encryption/decryption
-        val combined = secretKeyBytes + pubKeyBytes
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        return digest.digest(combined)
-    }
-
-    private fun hexToBytes(hex: String): ByteArray {
-        val len = hex.length
-        val data = ByteArray(len / 2)
-        var i = 0
-        while (i < len) {
-            data[i / 2] = ((Character.digit(hex[i], 16) shl 4) + Character.digit(hex[i + 1], 16)).toByte()
-            i += 2
-        }
-        return data
-    }
 }
-
-data class NwcResponse(
-    val requestId: String,
-    val encryptedContent: String
-)

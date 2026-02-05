@@ -24,7 +24,8 @@ class NotificationRepository @Inject constructor(
     private val nostrClient: NostrClient,
     private val notificationService: NotificationService,
     private val metadataCache: MetadataCache,
-    private val keyManager: KeyManager
+    private val keyManager: KeyManager,
+    private val feedRepository: dagger.Lazy<FeedRepository>
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -92,6 +93,7 @@ class NotificationRepository @Inject constructor(
             if (actorPubkey == myPubkey) return // Don't notify for own reactions
 
             val metadata = metadataCache.get(actorPubkey)
+            val postImageUrl = feedRepository.get().getPostImageUrl(targetEventId)
 
             scope.launch {
                 notificationService.addNotification(
@@ -102,7 +104,8 @@ class NotificationRepository @Inject constructor(
                         actorPubkey = actorPubkey,
                         actorName = metadata?.bestName,
                         actorAvatar = metadata?.picture,
-                        targetPostId = targetEventId
+                        targetPostId = targetEventId,
+                        targetPostImageUrl = postImageUrl
                     )
                 )
             }
@@ -155,21 +158,32 @@ class NotificationRepository @Inject constructor(
 
         if (mentionsPubkeys.contains(myPubkey)) {
             val metadata = metadataCache.get(authorPubkey)
+            val eventId = event.id().toHex()
+            val content = event.content()
+            val postImageUrl = feedRepository.get().getPostImageUrl(eventId)
+                ?: extractImageUrlFromContent(content)
 
             scope.launch {
                 notificationService.addNotification(
                     Notification(
-                        id = event.id().toHex(),
+                        id = eventId,
                         type = NotificationType.MENTION,
                         timestamp = event.createdAt().asSecs().toLong(),
                         actorPubkey = authorPubkey,
                         actorName = metadata?.bestName,
                         actorAvatar = metadata?.picture,
-                        targetPostId = event.id().toHex()
+                        targetPostId = eventId,
+                        targetPostImageUrl = postImageUrl,
+                        targetPostContent = content
                     )
                 )
             }
         }
+    }
+
+    private fun extractImageUrlFromContent(content: String): String? {
+        val imageRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
+        return imageRegex.find(content)?.value
     }
 
     private fun subscribeToNotifications() {

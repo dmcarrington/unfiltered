@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.NotificationService
 import com.nostr.unfiltered.nostr.models.Notification
+import com.nostr.unfiltered.repository.FeedRepository
 import com.nostr.unfiltered.repository.NotificationRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
@@ -13,7 +14,8 @@ import javax.inject.Inject
 @HiltViewModel
 class NotificationsViewModel @Inject constructor(
     private val notificationService: NotificationService,
-    private val notificationRepository: NotificationRepository
+    private val notificationRepository: NotificationRepository,
+    private val feedRepository: FeedRepository
 ) : ViewModel() {
 
     val notifications: StateFlow<List<Notification>> = notificationService.notifications
@@ -33,5 +35,9 @@ class NotificationsViewModel @Inject constructor(
         viewModelScope.launch {
             notificationService.markAllAsRead()
         }
+    }
+
+    fun getPostImageUrl(postId: String): String? {
+        return feedRepository.getPostImageUrl(postId)
     }
 }

@@ -12,6 +12,7 @@ data class Notification(
     val actorAvatar: String? = null,
     val targetPostId: String,          // The post being reacted to/zapped/mentioned
     val targetPostImageUrl: String? = null,
+    val targetPostContent: String? = null,  // For mentions - the post text
     val zapAmount: Long? = null,       // For zaps only
     val isRead: Boolean = false
 )
