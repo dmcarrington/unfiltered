@@ -1,6 +1,19 @@
 package com.nostr.unfiltered.nostr.models
 
 /**
+ * Represents a single media item (image or video) within a post
+ */
+data class MediaItem(
+    val url: String,
+    val mimeType: String? = null,
+    val blurhash: String? = null,
+    val dimensions: ImageDimensions? = null,
+    val altText: String? = null,
+    val fallbackUrls: List<String> = emptyList(),
+    val isVideo: Boolean = false
+)
+
+/**
  * Represents a photo post (NIP-68 kind 20 event)
  */
 data class PhotoPost(
@@ -15,6 +28,9 @@ data class PhotoPost(
     val altText: String? = null,
     val fallbackUrls: List<String> = emptyList(),
     val isVideo: Boolean = false,
+
+    // Multiple media items (for posts with multiple images/videos)
+    val mediaItems: List<MediaItem> = emptyList(),
 
     // Populated from author's metadata
     val authorName: String? = null,
@@ -36,6 +52,10 @@ data class PhotoPost(
         } catch (e: Exception) {
             authorPubkey.take(16) + "..."
         }
+
+    /** Returns true if this post has multiple media items */
+    val hasMultipleMedia: Boolean
+        get() = mediaItems.size > 1
 }
 
 data class ImageDimensions(
