@@ -21,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
+import rust.nostr.protocol.EventId
 import rust.nostr.protocol.Filter
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.PublicKey
@@ -43,6 +44,9 @@ class FeedRepository @Inject constructor(
 
     // Track which posts the current user has liked (event IDs)
     private val myLikedPosts = mutableSetOf<String>()
+
+    // Track seen reaction event IDs to prevent double-counting
+    private val seenReactionIds = mutableSetOf<String>()
 
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
     val posts: StateFlow<List<PhotoPost>> = _posts.asStateFlow()
@@ -126,6 +130,13 @@ class FeedRepository @Inject constructor(
     }
 
     private fun handleReactionEvent(event: Event) {
+        val reactionId = event.id().toHex()
+
+        // Skip if we've already processed this reaction
+        if (!seenReactionIds.add(reactionId)) {
+            return
+        }
+
         val tags = parseTagsFromEvent(event)
         val targetEventId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1) ?: return
         val reactorPubkey = event.author().toHex()
@@ -152,6 +163,10 @@ class FeedRepository @Inject constructor(
     private val pendingMetadataFetches = mutableSetOf<String>()
     private var metadataFetchJob: kotlinx.coroutines.Job? = null
 
+    // Pending post IDs that need reaction fetching
+    private val pendingReactionFetches = mutableSetOf<String>()
+    private var reactionFetchJob: kotlinx.coroutines.Job? = null
+
     private fun handlePhotoPostEvent(event: Event) {
         val post = parsePhotoPost(event) ?: return
         postsCache[post.id] = post
@@ -164,6 +179,12 @@ class FeedRepository @Inject constructor(
             }
             scheduleBatchMetadataFetch()
         }
+
+        // Queue reaction fetch for this post
+        synchronized(pendingReactionFetches) {
+            pendingReactionFetches.add(post.id)
+        }
+        scheduleBatchReactionFetch()
     }
 
     private fun scheduleBatchMetadataFetch() {
@@ -192,6 +213,46 @@ class FeedRepository @Inject constructor(
                 } catch (e: Exception) {
                     // Fallback to subscription-based fetch
                     pubkeysToFetch.forEach { fetchUserMetadata(it) }
+                }
+            }
+        }
+    }
+
+    private fun scheduleBatchReactionFetch() {
+        // Cancel existing job if still pending
+        if (reactionFetchJob?.isActive == true) return
+
+        reactionFetchJob = scope.launch {
+            // Small delay to batch multiple requests
+            kotlinx.coroutines.delay(500)
+
+            val postIdsToFetch: List<String>
+            synchronized(pendingReactionFetches) {
+                postIdsToFetch = pendingReactionFetches.toList()
+                pendingReactionFetches.clear()
+            }
+
+            if (postIdsToFetch.isNotEmpty()) {
+                try {
+                    // Subscribe to reactions (Kind 7) for these posts
+                    val eventIds = postIdsToFetch.mapNotNull { postId ->
+                        try {
+                            EventId.fromHex(postId)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+
+                    if (eventIds.isNotEmpty()) {
+                        val reactionsFilter = Filter()
+                            .kind(Kind(7u))
+                            .events(eventIds)
+                            .limit(500u)
+
+                        nostrClient.subscribe("post_reactions", listOf(reactionsFilter))
+                    }
+                } catch (e: Exception) {
+                    // Handle error silently
                 }
             }
         }
@@ -608,6 +669,8 @@ class FeedRepository @Inject constructor(
 
     fun clearCache() {
         postsCache.clear()
+        seenReactionIds.clear()
+        myLikedPosts.clear()
         _posts.value = emptyList()
     }
 
