@@ -127,6 +127,10 @@ class FeedViewModel @Inject constructor(
         if (_feedMode.value == mode) return
         _feedMode.value = mode
         viewModelScope.launch {
+            // Reconnect any failed/disconnected relays before switching feeds
+            nostrClient.reconnect()
+            // Brief delay to allow WebSocket connections to establish
+            kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (mode) {
                 FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
@@ -180,6 +184,10 @@ class FeedViewModel @Inject constructor(
     fun refresh() {
         viewModelScope.launch {
             _isRefreshing.value = true
+            // Reconnect any failed/disconnected relays before refreshing
+            nostrClient.reconnect()
+            // Brief delay to allow WebSocket connections to establish
+            kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (_feedMode.value) {
                 FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()

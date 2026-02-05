@@ -39,6 +39,7 @@ class CreatePostViewModel @Inject constructor(
     private var pendingDimensions: Pair<Int, Int>? = null
     private var pendingContext: Context? = null
     private var pendingPostUnsignedEvent: String? = null
+    private var pendingKind1UnsignedEvent: String? = null
 
     fun setSelectedImage(uri: Uri) {
         _uiState.update { it.copy(selectedImageUri = uri, error = null) }
@@ -212,12 +213,35 @@ class CreatePostViewModel @Inject constructor(
 
                 if (event != null) {
                     nostrClient.publish(event)
-                    _uiState.update {
-                        it.copy(
-                            pendingAmberIntent = null,
-                            amberSigningStep = null,
-                            isSuccess = true
+
+                    // Now create Kind 1 event for cross-client compatibility
+                    val uploadResult = pendingUploadResult
+                    if (uploadResult != null) {
+                        val unsignedKind1Event = createUnsignedKind1PostEvent(
+                            imageUrl = uploadResult.url,
+                            caption = _uiState.value.caption
                         )
+                        pendingKind1UnsignedEvent = unsignedKind1Event
+                        val intent = keyManager.createAmberSignEventIntent(
+                            eventJson = unsignedKind1Event,
+                            eventId = "kind1_post"
+                        )
+                        _uiState.update {
+                            it.copy(
+                                pendingAmberIntent = intent,
+                                amberSigningStep = AmberSigningStep.POST_KIND1
+                            )
+                        }
+                    } else {
+                        // No upload result, just finish
+                        _uiState.update {
+                            it.copy(
+                                pendingAmberIntent = null,
+                                amberSigningStep = null,
+                                isSuccess = true
+                            )
+                        }
+                        clearPendingState()
                     }
                 } else {
                     _uiState.update {
@@ -227,14 +251,53 @@ class CreatePostViewModel @Inject constructor(
                             error = "Failed to reconstruct signed event"
                         )
                     }
+                    clearPendingState()
                 }
-                clearPendingState()
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         pendingAmberIntent = null,
                         amberSigningStep = null,
                         error = e.message ?: "Failed to publish post"
+                    )
+                }
+                clearPendingState()
+            }
+        }
+    }
+
+    /**
+     * Handle signed Kind 1 post event from Amber - publish for cross-client compatibility
+     */
+    fun handleAmberSignedKind1Event(signedEventJson: String) {
+        viewModelScope.launch {
+            try {
+                val event = try {
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    reconstructSignedKind1Event(signedEventJson)
+                }
+
+                if (event != null) {
+                    nostrClient.publish(event)
+                }
+
+                // Regardless of Kind 1 success, the post was created (Kind 20 already published)
+                _uiState.update {
+                    it.copy(
+                        pendingAmberIntent = null,
+                        amberSigningStep = null,
+                        isSuccess = true
+                    )
+                }
+                clearPendingState()
+            } catch (e: Exception) {
+                // Kind 1 failed but Kind 20 was published, still consider it a success
+                _uiState.update {
+                    it.copy(
+                        pendingAmberIntent = null,
+                        amberSigningStep = null,
+                        isSuccess = true
                     )
                 }
                 clearPendingState()
@@ -263,6 +326,47 @@ class CreatePostViewModel @Inject constructor(
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Reconstruct a signed Kind 1 event from a signature.
+     */
+    private fun reconstructSignedKind1Event(signature: String): Event? {
+        val unsignedJson = pendingKind1UnsignedEvent ?: return null
+
+        return try {
+            val eventObj = JSONObject(unsignedJson)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Create unsigned Kind 1 post event for cross-client compatibility
+     */
+    private fun createUnsignedKind1PostEvent(imageUrl: String, caption: String): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+
+        // Content is caption followed by image URL
+        val content = if (caption.isNotBlank()) {
+            "$caption\n\n$imageUrl"
+        } else {
+            imageUrl
+        }
+
+        return JSONObject().apply {
+            put("kind", 1)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", JSONArray())
+            put("content", content)
+        }.toString()
     }
 
     private fun computeEventSerialization(event: JSONObject): String {
@@ -311,6 +415,7 @@ class CreatePostViewModel @Inject constructor(
         pendingDimensions = null
         pendingContext = null
         pendingPostUnsignedEvent = null
+        pendingKind1UnsignedEvent = null
     }
 
     /**
@@ -399,10 +504,23 @@ class CreatePostViewModel @Inject constructor(
         }
 
         // Kind 20 = picture post (NIP-68)
-        val event = EventBuilder(Kind(20u), caption, tags)
+        val kind20Event = EventBuilder(Kind(20u), caption, tags)
             .toEvent(keys)
 
-        nostrClient.publish(event)
+        nostrClient.publish(kind20Event)
+
+        // Also publish Kind 1 for cross-client compatibility (Primal, etc.)
+        // Content is the caption followed by the image URL
+        val kind1Content = if (caption.isNotBlank()) {
+            "$caption\n\n$imageUrl"
+        } else {
+            imageUrl
+        }
+
+        val kind1Event = EventBuilder(Kind(1u), kind1Content, emptyList())
+            .toEvent(keys)
+
+        nostrClient.publish(kind1Event)
     }
 
     private fun getImageDimensions(context: Context, uri: Uri): Pair<Int, Int>? {
@@ -430,8 +548,9 @@ class CreatePostViewModel @Inject constructor(
 }
 
 enum class AmberSigningStep {
-    AUTH,  // Signing Blossom authorization event
-    POST   // Signing photo post event
+    AUTH,       // Signing Blossom authorization event
+    POST,       // Signing photo post event (Kind 20)
+    POST_KIND1  // Signing compatibility post event (Kind 1)
 }
 
 data class CreatePostUiState(

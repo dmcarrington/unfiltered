@@ -5,6 +5,9 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +48,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -160,6 +166,10 @@ fun FeedScreen(
     // Feed mode dropdown state
     var dropdownExpanded by remember { mutableStateOf(false) }
 
+    // Fullscreen image viewer state
+    var selectedImageUrl by remember { mutableStateOf<String?>(null) }
+    var selectedImageAspectRatio by remember { mutableStateOf(1f) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -272,6 +282,10 @@ fun FeedScreen(
                                 onProfileClick = { onProfileClick(post.authorPubkey) },
                                 onLikeClick = { viewModel.likePost(post) },
                                 onZapClick = { viewModel.initiateZap(post) },
+                                onImageClick = {
+                                    selectedImageUrl = post.imageUrl
+                                    selectedImageAspectRatio = post.dimensions?.aspectRatio ?: 1f
+                                },
                                 showZapButton = uiState.canZap && !post.authorLud16.isNullOrEmpty()
                             )
                         }
@@ -334,6 +348,15 @@ fun FeedScreen(
                 }
             },
             confirmButton = { }
+        )
+    }
+
+    // Fullscreen Image Viewer Dialog
+    selectedImageUrl?.let { imageUrl ->
+        FullscreenImageDialog(
+            imageUrl = imageUrl,
+            aspectRatio = selectedImageAspectRatio,
+            onDismiss = { selectedImageUrl = null }
         )
     }
 }
@@ -506,6 +529,43 @@ private fun EmptyFeedState(feedMode: FeedMode = FeedMode.TRENDING) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.secondary,
                 textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun FullscreenImageDialog(
+    imageUrl: String,
+    aspectRatio: Float,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.9f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Full size image",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentScale = ContentScale.Fit
             )
         }
     }

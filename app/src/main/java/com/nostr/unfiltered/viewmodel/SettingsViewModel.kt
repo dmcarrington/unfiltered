@@ -92,6 +92,22 @@ class SettingsViewModel @Inject constructor(
         nostrClient.disconnectRelay(url)
     }
 
+    fun reconnectRelay(url: String) {
+        val normalizedUrl = normalizeRelayUrl(url)
+        viewModelScope.launch {
+            // First remove the existing failed connection
+            nostrClient.disconnectRelay(normalizedUrl)
+            // Then reconnect
+            nostrClient.connect(listOf(normalizedUrl))
+        }
+    }
+
+    fun reconnectAllRelays() {
+        viewModelScope.launch {
+            nostrClient.reconnect()
+        }
+    }
+
     fun logout() {
         keyManager.clearKeys()
         nostrClient.disconnect()

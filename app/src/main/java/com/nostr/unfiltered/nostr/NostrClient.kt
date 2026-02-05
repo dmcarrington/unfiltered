@@ -104,11 +104,15 @@ class NostrClient @Inject constructor() {
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 webSocket.close(1000, null)
+                // Remove the closed connection so it can be reconnected
+                relayConnections.remove(normalizedUrl)
                 updateRelayStatus(normalizedUrl, RelayStatus.Disconnected)
                 updateConnectionState()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // Remove the failed connection so it can be reconnected
+                relayConnections.remove(normalizedUrl)
                 updateRelayStatus(normalizedUrl, RelayStatus.Error(t.message ?: "Unknown error"))
                 updateConnectionState()
             }
@@ -117,6 +121,23 @@ class NostrClient @Inject constructor() {
         val webSocket = httpClient.newWebSocket(request, listener)
         relayConnections[normalizedUrl] = RelayConnection(normalizedUrl, webSocket)
         updateRelayStatus(normalizedUrl, RelayStatus.Connecting)
+    }
+
+    /**
+     * Reconnect to any relays that are disconnected or in error state
+     */
+    suspend fun reconnect(relayUrls: List<String> = defaultRelays) {
+        val currentStatus = _relayStatus.value
+        val needsReconnect = relayUrls.filter { url ->
+            val normalizedUrl = normalizeRelayUrl(url)
+            val status = currentStatus[normalizedUrl]
+            // Reconnect if not connected or not currently connecting
+            status != RelayStatus.Connected && status != RelayStatus.Connecting
+        }
+
+        if (needsReconnect.isNotEmpty()) {
+            connect(needsReconnect)
+        }
     }
 
     /**

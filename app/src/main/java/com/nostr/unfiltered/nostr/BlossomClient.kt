@@ -1,20 +1,25 @@
 package com.nostr.unfiltered.nostr
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
-import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Tag
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -65,8 +70,12 @@ class BlossomClient @Inject constructor(
             val inputStream = context.contentResolver.openInputStream(imageUri)
                 ?: return@withContext Result.failure(Exception("Could not open image"))
 
-            val bytes = inputStream.use { it.readBytes() }
+            val rawBytes = inputStream.use { it.readBytes() }
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+
+            // Strip EXIF metadata (location, camera info, etc.) for privacy
+            val bytes = stripExifMetadata(rawBytes, mimeType)
+
             val sha256 = calculateSha256(bytes)
             val unsignedAuthEvent = createUnsignedAuthorizationEvent(sha256, mimeType, bytes.size.toLong())
 
@@ -148,10 +157,13 @@ class BlossomClient @Inject constructor(
             val inputStream = context.contentResolver.openInputStream(imageUri)
                 ?: return@withContext Result.failure(Exception("Could not open image"))
 
-            val bytes = inputStream.use { it.readBytes() }
+            val rawBytes = inputStream.use { it.readBytes() }
 
             // Get mime type
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
+
+            // Strip EXIF metadata (location, camera info, etc.) for privacy
+            val bytes = stripExifMetadata(rawBytes, mimeType)
 
             // Calculate SHA-256 hash
             val sha256 = calculateSha256(bytes)
@@ -243,5 +255,93 @@ class BlossomClient @Inject constructor(
         val digest = MessageDigest.getInstance("SHA-256")
         val hashBytes = digest.digest(bytes)
         return hashBytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Strip EXIF metadata from image bytes for privacy.
+     * Removes location data, camera info, timestamps, and other sensitive metadata.
+     * Preserves image orientation by applying rotation before re-encoding.
+     */
+    @Suppress("DEPRECATION")
+    private fun stripExifMetadata(bytes: ByteArray, mimeType: String): ByteArray {
+        return try {
+            // Read EXIF orientation before decoding
+            val orientation = try {
+                val exif = ExifInterface(ByteArrayInputStream(bytes))
+                exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            } catch (e: Exception) {
+                ExifInterface.ORIENTATION_NORMAL
+            }
+
+            // Decode the image to a Bitmap (this naturally strips EXIF data)
+            var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: return bytes // Return original if decode fails
+
+            // Apply rotation based on EXIF orientation
+            bitmap = applyExifOrientation(bitmap, orientation)
+
+            // Determine output format based on mime type
+            val format = when {
+                mimeType.contains("png", ignoreCase = true) -> Bitmap.CompressFormat.PNG
+                mimeType.contains("webp", ignoreCase = true) -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        Bitmap.CompressFormat.WEBP_LOSSY
+                    } else {
+                        Bitmap.CompressFormat.WEBP
+                    }
+                }
+                else -> Bitmap.CompressFormat.JPEG
+            }
+
+            // Re-encode the bitmap without EXIF data (rotation is now baked in)
+            val outputStream = ByteArrayOutputStream()
+            val quality = if (format == Bitmap.CompressFormat.PNG) 100 else 95
+            bitmap.compress(format, quality, outputStream)
+            bitmap.recycle()
+
+            outputStream.toByteArray()
+        } catch (e: Exception) {
+            // If stripping fails, return original bytes rather than failing the upload
+            bytes
+        }
+    }
+
+    /**
+     * Apply EXIF orientation to a bitmap by rotating/flipping as needed.
+     * Returns a new bitmap with the correct orientation.
+     */
+    private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            else -> return bitmap // No transformation needed
+        }
+
+        val rotatedBitmap = Bitmap.createBitmap(
+            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+        )
+
+        // Recycle original if a new bitmap was created
+        if (rotatedBitmap != bitmap) {
+            bitmap.recycle()
+        }
+
+        return rotatedBitmap
     }
 }
