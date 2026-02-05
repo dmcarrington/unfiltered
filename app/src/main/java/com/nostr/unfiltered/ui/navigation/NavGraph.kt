@@ -23,10 +23,12 @@ import androidx.navigation.navArgument
 import com.nostr.unfiltered.ui.screens.auth.AuthScreen
 import com.nostr.unfiltered.ui.screens.createpost.CreatePostScreen
 import com.nostr.unfiltered.ui.screens.feed.FeedScreen
+import com.nostr.unfiltered.ui.screens.notifications.NotificationsScreen
 import com.nostr.unfiltered.ui.screens.profile.ProfileEditScreen
 import com.nostr.unfiltered.ui.screens.profile.ProfileScreen
 import com.nostr.unfiltered.ui.screens.search.SearchScreen
 import com.nostr.unfiltered.ui.screens.settings.SettingsScreen
+import com.nostr.unfiltered.ui.screens.wallet.WalletScreen
 import com.nostr.unfiltered.viewmodel.AuthViewModel
 
 sealed class Screen(val route: String) {
@@ -39,6 +41,8 @@ sealed class Screen(val route: String) {
     object CreatePost : Screen("create_post")
     object Settings : Screen("settings")
     object ProfileEdit : Screen("profile_edit")
+    object Wallet : Screen("wallet")
+    object Notifications : Screen("notifications")
 }
 
 @Composable
@@ -81,7 +85,25 @@ fun UnfilteredNavGraph(
                 },
                 onSettingsClick = {
                     navController.navigate(Screen.Settings.route)
+                },
+                onWalletClick = {
+                    navController.navigate(Screen.Wallet.route)
+                },
+                onNotificationsClick = {
+                    navController.navigate(Screen.Notifications.route)
                 }
+            )
+        }
+
+        composable(Screen.Wallet.route) {
+            WalletScreen(
+                onBackClick = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.Notifications.route) {
+            NotificationsScreen(
+                onBackClick = { navController.popBackStack() }
             )
         }
 

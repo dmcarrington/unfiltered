@@ -58,6 +58,13 @@ class FeedRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // Callback for new post detection (used by FeedViewModel for new posts indicator)
+    private var newestPostCallback: ((Long) -> Unit)? = null
+
+    fun setNewestPostCallback(callback: (Long) -> Unit) {
+        newestPostCallback = callback
+    }
+
     // Amber signing flow for follow/unfollow
     private val _pendingFollowIntent = MutableStateFlow<Intent?>(null)
     val pendingFollowIntent: StateFlow<Intent?> = _pendingFollowIntent.asStateFlow()
@@ -172,6 +179,9 @@ class FeedRepository @Inject constructor(
         val post = parsePhotoPost(event) ?: return
         postsCache[post.id] = post
         refreshPostsList()
+
+        // Notify about new post timestamp for new posts indicator
+        newestPostCallback?.invoke(post.createdAt)
 
         // Queue metadata fetch if not cached
         if (!metadataCache.contains(post.authorPubkey)) {

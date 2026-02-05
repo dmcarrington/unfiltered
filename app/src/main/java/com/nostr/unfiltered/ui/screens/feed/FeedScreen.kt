@@ -27,16 +27,20 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,7 +63,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -75,6 +81,7 @@ import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.ui.components.PhotoCard
 import com.nostr.unfiltered.viewmodel.FeedMode
 import com.nostr.unfiltered.viewmodel.FeedViewModel
+import com.nostr.unfiltered.viewmodel.NotificationsViewModel
 import com.nostr.unfiltered.viewmodel.ZapState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -84,12 +91,17 @@ fun FeedScreen(
     onSearchClick: () -> Unit,
     onCreatePostClick: () -> Unit,
     onSettingsClick: () -> Unit,
-    viewModel: FeedViewModel = hiltViewModel()
+    onWalletClick: () -> Unit,
+    onNotificationsClick: () -> Unit,
+    viewModel: FeedViewModel = hiltViewModel(),
+    notificationsViewModel: NotificationsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val zapState by viewModel.zapState.collectAsState()
     val pendingLikeIntent by viewModel.pendingLikeIntent.collectAsState()
+    val hasNewPosts by viewModel.hasNewPosts.collectAsState()
+    val hasUnreadNotifications by notificationsViewModel.hasUnread.collectAsState()
     val listState = rememberLazyListState()
 
     // Amber like signing launcher
@@ -121,6 +133,11 @@ fun FeedScreen(
     // Refresh zap status when screen appears
     LaunchedEffect(Unit) {
         viewModel.refreshZapStatus()
+    }
+
+    // Mark feed as read when screen first displays
+    LaunchedEffect(Unit) {
+        viewModel.markFeedAsRead()
     }
 
     // Handle zap state changes
@@ -173,6 +190,9 @@ fun FeedScreen(
     // Fullscreen image viewer state
     var selectedMediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var selectedMediaIndex by remember { mutableStateOf(0) }
+
+    // Coroutine scope for scroll animations
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -244,6 +264,56 @@ fun FeedScreen(
         floatingActionButton = {
             FloatingActionButton(onClick = onCreatePostClick) {
                 Icon(Icons.Default.Add, contentDescription = "Create post")
+            }
+        },
+        bottomBar = {
+            BottomAppBar {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Home - scroll to top
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(0)
+                            }
+                            viewModel.markFeedAsRead()
+                        }
+                    ) {
+                        Box {
+                            Icon(Icons.Default.Home, contentDescription = "Home")
+                            if (hasNewPosts) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .align(Alignment.TopEnd)
+                                        .background(Color.Red, CircleShape)
+                                )
+                            }
+                        }
+                    }
+
+                    // Wallet
+                    IconButton(onClick = onWalletClick) {
+                        Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Wallet")
+                    }
+
+                    // Notifications
+                    IconButton(onClick = onNotificationsClick) {
+                        Box {
+                            Icon(Icons.Default.Notifications, contentDescription = "Notifications")
+                            if (hasUnreadNotifications) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .align(Alignment.TopEnd)
+                                        .background(Color.Red, CircleShape)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     ) { paddingValues ->

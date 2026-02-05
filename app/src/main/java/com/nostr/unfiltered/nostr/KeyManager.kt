@@ -306,10 +306,14 @@ class KeyManager @Inject constructor(
                 val event = uri.getQueryParameter("event")
                 val npub = uri.getQueryParameter("npub")
                 val error = uri.getQueryParameter("error")
+                val result = uri.getQueryParameter("result")
+                val type = uri.getQueryParameter("type")
 
                 when {
                     error != null -> AmberCallbackResult.Error(error)
                     npub != null -> AmberCallbackResult.PublicKey(npub)
+                    type == "nip04_encrypt" && result != null -> AmberCallbackResult.EncryptedContent(result)
+                    type == "nip04_decrypt" && result != null -> AmberCallbackResult.DecryptedContent(result)
                     signature != null -> AmberCallbackResult.Signature(signature, event)
                     event != null -> AmberCallbackResult.SignedEvent(event)
                     else -> AmberCallbackResult.Error("Unknown callback format")
@@ -331,5 +335,7 @@ sealed class AmberCallbackResult {
     data class PublicKey(val npub: String) : AmberCallbackResult()
     data class Signature(val signature: String, val event: String?) : AmberCallbackResult()
     data class SignedEvent(val eventJson: String) : AmberCallbackResult()
+    data class EncryptedContent(val ciphertext: String) : AmberCallbackResult()
+    data class DecryptedContent(val plaintext: String) : AmberCallbackResult()
     data class Error(val message: String) : AmberCallbackResult()
 }
