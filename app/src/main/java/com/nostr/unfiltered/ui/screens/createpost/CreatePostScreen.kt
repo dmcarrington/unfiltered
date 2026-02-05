@@ -25,6 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -68,7 +72,7 @@ fun CreatePostScreen(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
-        uri?.let { viewModel.setSelectedImage(it) }
+        uri?.let { viewModel.setSelectedMedia(context, it) }
     }
 
     // Amber signing launcher
@@ -164,7 +168,7 @@ fun CreatePostScreen(
                     )
                     .clickable(enabled = !uiState.isUploading) {
                         photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                         )
                     },
                 contentAlignment = Alignment.Center
@@ -172,10 +176,28 @@ fun CreatePostScreen(
                 if (uiState.selectedImageUri != null) {
                     AsyncImage(
                         model = uiState.selectedImageUri,
-                        contentDescription = "Selected image",
+                        contentDescription = if (uiState.isVideo) "Selected video" else "Selected image",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
+
+                    // Video indicator overlay
+                    if (uiState.isVideo && !uiState.isUploading) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.6f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Video",
+                                modifier = Modifier.size(40.dp),
+                                tint = Color.White
+                            )
+                        }
+                    }
 
                     if (uiState.isUploading) {
                         Box(
@@ -210,7 +232,7 @@ fun CreatePostScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Tap to select a photo",
+                            text = "Tap to select a photo or video",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.secondary
                         )
@@ -239,7 +261,12 @@ fun CreatePostScreen(
                 value = uiState.altText,
                 onValueChange = { viewModel.setAltText(it) },
                 label = { Text("Alt text (accessibility)") },
-                placeholder = { Text("Describe this image for visually impaired users...") },
+                placeholder = {
+                    Text(
+                        if (uiState.isVideo) "Describe this video for visually impaired users..."
+                        else "Describe this image for visually impaired users..."
+                    )
+                },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
                 maxLines = 4,

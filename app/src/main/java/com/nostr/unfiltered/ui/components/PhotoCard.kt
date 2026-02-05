@@ -104,20 +104,28 @@ fun PhotoCard(
                 )
             }
 
-            // Image
+            // Image or Video
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onImageClick() }
+                    .then(if (!post.isVideo) Modifier.clickable { onImageClick() } else Modifier)
             ) {
-                AsyncImage(
-                    model = post.imageUrl,
-                    contentDescription = post.altText ?: post.caption,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(post.dimensions?.aspectRatio ?: 1f),
-                    contentScale = ContentScale.Crop
-                )
+                if (post.isVideo) {
+                    VideoPlayer(
+                        videoUrl = post.imageUrl,
+                        aspectRatio = post.dimensions?.aspectRatio ?: (16f / 9f),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    AsyncImage(
+                        model = post.imageUrl,
+                        contentDescription = post.altText ?: post.caption,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(post.dimensions?.aspectRatio ?: 1f),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
 
             // Actions row
