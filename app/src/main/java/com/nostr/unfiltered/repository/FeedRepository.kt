@@ -8,6 +8,7 @@ import com.nostr.unfiltered.nostr.NostrEvent
 import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.ContactList
 import com.nostr.unfiltered.nostr.models.ImageDimensions
+import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import kotlinx.coroutines.CoroutineScope
@@ -261,36 +262,23 @@ class FeedRepository @Inject constructor(
     fun parsePhotoPost(event: Event): PhotoPost? {
         val tags = parseTagsFromEvent(event)
 
-        // Find imeta tag with image URL
-        val imetaTag = tags.find { it.size >= 2 && it[0] == "imeta" }
-        var imageUrl: String? = null
-        var blurhash: String? = null
-        var dimensions: ImageDimensions? = null
-        var altText: String? = null
-        val fallbackUrls = mutableListOf<String>()
+        // Find ALL imeta tags (posts can have multiple images)
+        val imetaTags = tags.filter { it.size >= 2 && it[0] == "imeta" }
+        val mediaItems = mutableListOf<MediaItem>()
 
-        if (imetaTag != null) {
-            // Parse imeta tag values
-            for (i in 1 until imetaTag.size) {
-                val part = imetaTag[i]
-                when {
-                    part.startsWith("url ") -> imageUrl = part.removePrefix("url ")
-                    part.startsWith("blurhash ") -> blurhash = part.removePrefix("blurhash ")
-                    part.startsWith("dim ") -> {
-                        val dimStr = part.removePrefix("dim ")
-                        val parts = dimStr.split("x")
-                        if (parts.size == 2) {
-                            dimensions = ImageDimensions(
-                                parts[0].toIntOrNull() ?: 0,
-                                parts[1].toIntOrNull() ?: 0
-                            )
-                        }
-                    }
-                    part.startsWith("alt ") -> altText = part.removePrefix("alt ")
-                    part.startsWith("fallback ") -> fallbackUrls.add(part.removePrefix("fallback "))
-                }
+        for (imetaTag in imetaTags) {
+            val item = parseImetaTag(imetaTag)
+            if (item != null) {
+                mediaItems.add(item)
             }
         }
+
+        // Primary image info (from first imeta or fallback sources)
+        var imageUrl: String? = mediaItems.firstOrNull()?.url
+        var blurhash: String? = mediaItems.firstOrNull()?.blurhash
+        var dimensions: ImageDimensions? = mediaItems.firstOrNull()?.dimensions
+        var altText: String? = mediaItems.firstOrNull()?.altText
+        var fallbackUrls: List<String> = mediaItems.firstOrNull()?.fallbackUrls ?: emptyList()
 
         // Also check for standalone url tag or image tag
         if (imageUrl == null) {
@@ -300,7 +288,7 @@ class FeedRepository @Inject constructor(
             imageUrl = tags.find { it.size >= 2 && it[0] == "image" }?.get(1)
         }
 
-        // Check content for image or video URL if still not found
+        // Check content for image or video URLs if still not found
         if (imageUrl == null) {
             val content = event.content()
             // Try image first
@@ -312,15 +300,23 @@ class FeedRepository @Inject constructor(
                 val videoRegex = Regex("https?://[^\\s]+\\.(mp4|webm|mov|m4v)", RegexOption.IGNORE_CASE)
                 imageUrl = videoRegex.find(content)?.value
             }
+
+            // If found in content and no imeta tags, try to find all media URLs
+            if (imageUrl != null && mediaItems.isEmpty()) {
+                val allMediaRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m4v)", RegexOption.IGNORE_CASE)
+                allMediaRegex.findAll(content).forEach { match ->
+                    val url = match.value
+                    val isVideo = isVideoUrl(url)
+                    mediaItems.add(MediaItem(url = url, isVideo = isVideo))
+                }
+            }
         }
 
         // Must have a media URL
         if (imageUrl == null) return null
 
-        // Determine if this is a video based on file extension
-        val isVideo = imageUrl.lowercase().let { url ->
-            url.endsWith(".mp4") || url.endsWith(".webm") || url.endsWith(".mov") || url.endsWith(".m4v")
-        }
+        // Determine if primary is a video based on file extension
+        val isVideo = isVideoUrl(imageUrl)
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val authorPubkey = event.author().toHex()
@@ -339,6 +335,7 @@ class FeedRepository @Inject constructor(
             altText = altText,
             fallbackUrls = fallbackUrls,
             isVideo = isVideo,
+            mediaItems = mediaItems,
             authorName = metadata?.bestName,
             authorAvatar = metadata?.picture,
             authorNip05 = metadata?.nip05,
@@ -346,6 +343,62 @@ class FeedRepository @Inject constructor(
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
             isLiked = myLikedPosts.contains(eventId)
         )
+    }
+
+    /**
+     * Parse a single imeta tag into a MediaItem
+     */
+    private fun parseImetaTag(imetaTag: List<String>): MediaItem? {
+        var url: String? = null
+        var mimeType: String? = null
+        var blurhash: String? = null
+        var dimensions: ImageDimensions? = null
+        var altText: String? = null
+        val fallbackUrls = mutableListOf<String>()
+
+        for (i in 1 until imetaTag.size) {
+            val part = imetaTag[i]
+            when {
+                part.startsWith("url ") -> url = part.removePrefix("url ")
+                part.startsWith("m ") -> mimeType = part.removePrefix("m ")
+                part.startsWith("blurhash ") -> blurhash = part.removePrefix("blurhash ")
+                part.startsWith("dim ") -> {
+                    val dimStr = part.removePrefix("dim ")
+                    val parts = dimStr.split("x")
+                    if (parts.size == 2) {
+                        dimensions = ImageDimensions(
+                            parts[0].toIntOrNull() ?: 0,
+                            parts[1].toIntOrNull() ?: 0
+                        )
+                    }
+                }
+                part.startsWith("alt ") -> altText = part.removePrefix("alt ")
+                part.startsWith("fallback ") -> fallbackUrls.add(part.removePrefix("fallback "))
+            }
+        }
+
+        if (url == null) return null
+
+        val isVideo = mimeType?.startsWith("video/") == true || isVideoUrl(url)
+
+        return MediaItem(
+            url = url,
+            mimeType = mimeType,
+            blurhash = blurhash,
+            dimensions = dimensions,
+            altText = altText,
+            fallbackUrls = fallbackUrls,
+            isVideo = isVideo
+        )
+    }
+
+    /**
+     * Check if a URL points to a video based on file extension
+     */
+    private fun isVideoUrl(url: String): Boolean {
+        return url.lowercase().let {
+            it.endsWith(".mp4") || it.endsWith(".webm") || it.endsWith(".mov") || it.endsWith(".m4v")
+        }
     }
 
     private fun parseTagsFromEvent(event: Event): List<List<String>> {
