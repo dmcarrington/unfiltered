@@ -15,8 +15,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 enum class FeedMode {
@@ -53,7 +55,7 @@ class FeedViewModel @Inject constructor(
     // Amber like signing flow
     val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
 
-    private val _feedMode = MutableStateFlow(FeedMode.TRENDING)
+    private val _feedMode = MutableStateFlow(FeedMode.FOLLOWING)
     val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
 
     // New posts indicator
@@ -116,7 +118,6 @@ class FeedViewModel @Inject constructor(
         observeRelayStatus()
         ensureConnectedAndSubscribe()
         checkZapAvailability()
-        setDefaultFeedMode()
         setupNewPostDetection()
         startNewPostsPolling()
     }
@@ -157,17 +158,6 @@ class FeedViewModel @Inject constructor(
         _hasNewPosts.value = false
     }
 
-    private fun setDefaultFeedMode() {
-        viewModelScope.launch {
-            // Wait briefly for follow list to load
-            kotlinx.coroutines.delay(1000)
-            val hasFollows = feedRepository.followList.value.isNotEmpty()
-            if (hasFollows && _feedMode.value == FeedMode.TRENDING) {
-                setFeedMode(FeedMode.FOLLOWING)
-            }
-        }
-    }
-
     fun setFeedMode(mode: FeedMode) {
         if (_feedMode.value == mode) return
         _feedMode.value = mode
@@ -178,7 +168,11 @@ class FeedViewModel @Inject constructor(
             kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (mode) {
-                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.FOLLOWING -> {
+                    if (!feedRepository.subscribeToFollowedFeed()) {
+                        _feedMode.value = FeedMode.TRENDING
+                    }
+                }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
             }
         }
@@ -212,7 +206,22 @@ class FeedViewModel @Inject constructor(
             // Wait for connection
             nostrClient.connectionState.collect { state ->
                 if (state == NostrClient.ConnectionState.Connected) {
-                    feedRepository.subscribeToFeed()
+                    // First, load user data (follow list, reactions) before deciding feed mode
+                    feedRepository.subscribeToUserData()
+
+                    // Wait for follow list to arrive from relays (with timeout)
+                    val hasFollows = withTimeoutOrNull(3000L) {
+                        feedRepository.followList.first { it.isNotEmpty() }
+                        true
+                    } ?: false
+
+                    if (hasFollows) {
+                        _feedMode.value = FeedMode.FOLLOWING
+                        feedRepository.subscribeToFollowedFeed()
+                    } else {
+                        _feedMode.value = FeedMode.TRENDING
+                        feedRepository.subscribeToFeed()
+                    }
                     return@collect
                 }
             }
@@ -235,7 +244,11 @@ class FeedViewModel @Inject constructor(
             kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (_feedMode.value) {
-                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.FOLLOWING -> {
+                    if (!feedRepository.subscribeToFollowedFeed()) {
+                        _feedMode.value = FeedMode.TRENDING
+                    }
+                }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
             }
             _isRefreshing.value = false
@@ -343,6 +356,6 @@ data class FeedUiState(
     val isEmpty: Boolean = true,
     val error: String? = null,
     val canZap: Boolean = false,
-    val feedMode: FeedMode = FeedMode.TRENDING,
+    val feedMode: FeedMode = FeedMode.FOLLOWING,
     val hasFollows: Boolean = false
 )

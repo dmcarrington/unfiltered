@@ -453,6 +453,25 @@ class FeedRepository @Inject constructor(
 
     // ==================== Subscription Management ====================
 
+    fun subscribeToUserData() {
+        _isLoading.value = true
+        val myPubkey = keyManager.getPublicKeyHex() ?: return
+
+        val followListFilter = Filter()
+            .kind(Kind(3u))
+            .author(PublicKey.fromHex(myPubkey))
+            .limit(1u)
+
+        nostrClient.subscribe("my_follows", listOf(followListFilter))
+
+        val myReactionsFilter = Filter()
+            .kind(Kind(7u))
+            .author(PublicKey.fromHex(myPubkey))
+            .limit(500u)
+
+        nostrClient.subscribe("my_reactions", listOf(myReactionsFilter))
+    }
+
     fun subscribeToFeed() {
         _isLoading.value = true
 
@@ -492,12 +511,12 @@ class FeedRepository @Inject constructor(
         _isLoading.value = false
     }
 
-    fun subscribeToFollowedFeed() {
+    fun subscribeToFollowedFeed(): Boolean {
         val follows = _followList.value
         if (follows.isEmpty()) {
-            // No follows yet, subscribe to global feed
+            // No follows yet, fall back to global feed
             subscribeToFeed()
-            return
+            return false
         }
 
         _isLoading.value = true
@@ -548,6 +567,7 @@ class FeedRepository @Inject constructor(
         }
 
         _isLoading.value = false
+        return true
     }
 
     fun fetchUserMetadata(pubkey: String) {
