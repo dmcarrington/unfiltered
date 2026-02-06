@@ -9,6 +9,7 @@ import com.nostr.unfiltered.nostr.ZapManager
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.repository.FeedRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -54,6 +55,12 @@ class FeedViewModel @Inject constructor(
 
     private val _feedMode = MutableStateFlow(FeedMode.TRENDING)
     val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
+
+    // New posts indicator
+    private val _hasNewPosts = MutableStateFlow(false)
+    val hasNewPosts: StateFlow<Boolean> = _hasNewPosts.asStateFlow()
+
+    private var lastDisplayedTimestamp: Long = 0L
 
     /**
      * Calculate trending score with time decay.
@@ -110,6 +117,44 @@ class FeedViewModel @Inject constructor(
         ensureConnectedAndSubscribe()
         checkZapAvailability()
         setDefaultFeedMode()
+        setupNewPostDetection()
+        startNewPostsPolling()
+    }
+
+    private fun setupNewPostDetection() {
+        feedRepository.setNewestPostCallback { newPostTimestamp ->
+            if (lastDisplayedTimestamp > 0 && newPostTimestamp > lastDisplayedTimestamp) {
+                _hasNewPosts.value = true
+            }
+        }
+    }
+
+    private fun startNewPostsPolling() {
+        viewModelScope.launch {
+            while (true) {
+                delay(5 * 60 * 1000L) // 5 minutes
+                checkForNewPosts()
+            }
+        }
+    }
+
+    private fun checkForNewPosts() {
+        val newestInFeed = posts.value.firstOrNull()?.createdAt ?: 0L
+        if (lastDisplayedTimestamp > 0 && newestInFeed > lastDisplayedTimestamp) {
+            _hasNewPosts.value = true
+        }
+    }
+
+    /**
+     * Mark the current feed as read, updating the last displayed timestamp
+     * and clearing the new posts indicator.
+     */
+    fun markFeedAsRead() {
+        val newestPost = posts.value.firstOrNull()
+        if (newestPost != null) {
+            lastDisplayedTimestamp = newestPost.createdAt
+        }
+        _hasNewPosts.value = false
     }
 
     private fun setDefaultFeedMode() {
