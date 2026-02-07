@@ -3,6 +3,7 @@ package com.nostr.unfiltered.ui.screens.profile
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -134,8 +136,10 @@ fun ProfileScreen(
                     postsCount = uiState.posts.size,
                     followingCount = uiState.followingCount,
                     isFollowing = uiState.isFollowing,
+                    isMuted = uiState.isMuted,
                     isOwnProfile = uiState.isOwnProfile,
-                    onFollowClick = { viewModel.toggleFollow() }
+                    onFollowClick = { viewModel.toggleFollow() },
+                    onMuteClick = { viewModel.toggleMute() }
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -187,8 +191,10 @@ private fun ProfileHeader(
     postsCount: Int,
     followingCount: Int,
     isFollowing: Boolean,
+    isMuted: Boolean,
     isOwnProfile: Boolean,
-    onFollowClick: () -> Unit
+    onFollowClick: () -> Unit,
+    onMuteClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -286,6 +292,31 @@ private fun ProfileHeader(
                 ) {
                     Text("Follow")
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Mute button
+            OutlinedButton(
+                onClick = onMuteClick,
+                modifier = Modifier.fillMaxWidth(),
+                colors = if (isMuted) {
+                    ButtonDefaults.outlinedButtonColors()
+                } else {
+                    ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                },
+                border = if (isMuted) {
+                    ButtonDefaults.outlinedButtonBorder(true)
+                } else {
+                    BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.error
+                    )
+                }
+            ) {
+                Text(if (isMuted) "Unmute" else "Mute")
             }
         }
     }

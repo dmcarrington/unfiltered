@@ -8,6 +8,7 @@ import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.ZapManager
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.repository.FeedRepository
+import com.nostr.unfiltered.repository.MuteListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +32,8 @@ class FeedViewModel @Inject constructor(
     private val nostrClient: NostrClient,
     private val keyManager: KeyManager,
     private val feedRepository: FeedRepository,
-    private val zapManager: ZapManager
+    private val zapManager: ZapManager,
+    private val muteListRepository: MuteListRepository
 ) : ViewModel() {
 
     val connectionState: StateFlow<NostrClient.ConnectionState> = nostrClient.connectionState
@@ -83,7 +85,8 @@ class FeedViewModel @Inject constructor(
         _isRefreshing,
         _canZap,
         _feedMode,
-        feedRepository.followList
+        feedRepository.followList,
+        muteListRepository.muteList
     ) { values ->
         val posts = values[0] as List<PhotoPost>
         val connectionState = values[1] as NostrClient.ConnectionState
@@ -92,10 +95,13 @@ class FeedViewModel @Inject constructor(
         val canZap = values[4] as Boolean
         val feedMode = values[5] as FeedMode
         val follows = values[6] as Set<String>
+        val mutedUsers = values[7] as Set<String>
+
+        val filteredPosts = posts.filter { it.authorPubkey !in mutedUsers }
 
         val sortedPosts = when (feedMode) {
-            FeedMode.TRENDING -> posts.sortedByDescending { calculateTrendingScore(it) }
-            FeedMode.FOLLOWING -> posts.sortedByDescending { it.createdAt }
+            FeedMode.TRENDING -> filteredPosts.sortedByDescending { calculateTrendingScore(it) }
+            FeedMode.FOLLOWING -> filteredPosts.sortedByDescending { it.createdAt }
         }
 
         FeedUiState(
@@ -115,6 +121,7 @@ class FeedViewModel @Inject constructor(
     )
 
     init {
+        viewModelScope.launch { muteListRepository.initialize() }
         observeRelayStatus()
         ensureConnectedAndSubscribe()
         checkZapAvailability()
