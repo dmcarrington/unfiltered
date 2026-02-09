@@ -8,14 +8,18 @@ import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.ZapManager
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.repository.FeedRepository
+import com.nostr.unfiltered.repository.MuteListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 enum class FeedMode {
@@ -28,7 +32,8 @@ class FeedViewModel @Inject constructor(
     private val nostrClient: NostrClient,
     private val keyManager: KeyManager,
     private val feedRepository: FeedRepository,
-    private val zapManager: ZapManager
+    private val zapManager: ZapManager,
+    private val muteListRepository: MuteListRepository
 ) : ViewModel() {
 
     val connectionState: StateFlow<NostrClient.ConnectionState> = nostrClient.connectionState
@@ -52,8 +57,14 @@ class FeedViewModel @Inject constructor(
     // Amber like signing flow
     val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
 
-    private val _feedMode = MutableStateFlow(FeedMode.TRENDING)
+    private val _feedMode = MutableStateFlow(FeedMode.FOLLOWING)
     val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
+
+    // New posts indicator
+    private val _hasNewPosts = MutableStateFlow(false)
+    val hasNewPosts: StateFlow<Boolean> = _hasNewPosts.asStateFlow()
+
+    private var lastDisplayedTimestamp: Long = 0L
 
     /**
      * Calculate trending score with time decay.
@@ -74,7 +85,8 @@ class FeedViewModel @Inject constructor(
         _isRefreshing,
         _canZap,
         _feedMode,
-        feedRepository.followList
+        feedRepository.followList,
+        muteListRepository.muteList
     ) { values ->
         val posts = values[0] as List<PhotoPost>
         val connectionState = values[1] as NostrClient.ConnectionState
@@ -83,10 +95,13 @@ class FeedViewModel @Inject constructor(
         val canZap = values[4] as Boolean
         val feedMode = values[5] as FeedMode
         val follows = values[6] as Set<String>
+        val mutedUsers = values[7] as Set<String>
+
+        val filteredPosts = posts.filter { it.authorPubkey !in mutedUsers }
 
         val sortedPosts = when (feedMode) {
-            FeedMode.TRENDING -> posts.sortedByDescending { calculateTrendingScore(it) }
-            FeedMode.FOLLOWING -> posts.sortedByDescending { it.createdAt }
+            FeedMode.TRENDING -> filteredPosts.sortedByDescending { calculateTrendingScore(it) }
+            FeedMode.FOLLOWING -> filteredPosts.sortedByDescending { it.createdAt }
         }
 
         FeedUiState(
@@ -106,21 +121,48 @@ class FeedViewModel @Inject constructor(
     )
 
     init {
+        viewModelScope.launch { muteListRepository.initialize() }
         observeRelayStatus()
         ensureConnectedAndSubscribe()
         checkZapAvailability()
-        setDefaultFeedMode()
+        setupNewPostDetection()
+        startNewPostsPolling()
     }
 
-    private fun setDefaultFeedMode() {
-        viewModelScope.launch {
-            // Wait briefly for follow list to load
-            kotlinx.coroutines.delay(1000)
-            val hasFollows = feedRepository.followList.value.isNotEmpty()
-            if (hasFollows && _feedMode.value == FeedMode.TRENDING) {
-                setFeedMode(FeedMode.FOLLOWING)
+    private fun setupNewPostDetection() {
+        feedRepository.setNewestPostCallback { newPostTimestamp ->
+            if (lastDisplayedTimestamp > 0 && newPostTimestamp > lastDisplayedTimestamp) {
+                _hasNewPosts.value = true
             }
         }
+    }
+
+    private fun startNewPostsPolling() {
+        viewModelScope.launch {
+            while (true) {
+                delay(5 * 60 * 1000L) // 5 minutes
+                checkForNewPosts()
+            }
+        }
+    }
+
+    private fun checkForNewPosts() {
+        val newestInFeed = posts.value.firstOrNull()?.createdAt ?: 0L
+        if (lastDisplayedTimestamp > 0 && newestInFeed > lastDisplayedTimestamp) {
+            _hasNewPosts.value = true
+        }
+    }
+
+    /**
+     * Mark the current feed as read, updating the last displayed timestamp
+     * and clearing the new posts indicator.
+     */
+    fun markFeedAsRead() {
+        val newestPost = posts.value.firstOrNull()
+        if (newestPost != null) {
+            lastDisplayedTimestamp = newestPost.createdAt
+        }
+        _hasNewPosts.value = false
     }
 
     fun setFeedMode(mode: FeedMode) {
@@ -133,7 +175,11 @@ class FeedViewModel @Inject constructor(
             kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (mode) {
-                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.FOLLOWING -> {
+                    if (!feedRepository.subscribeToFollowedFeed()) {
+                        _feedMode.value = FeedMode.TRENDING
+                    }
+                }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
             }
         }
@@ -167,7 +213,22 @@ class FeedViewModel @Inject constructor(
             // Wait for connection
             nostrClient.connectionState.collect { state ->
                 if (state == NostrClient.ConnectionState.Connected) {
-                    feedRepository.subscribeToFeed()
+                    // First, load user data (follow list, reactions) before deciding feed mode
+                    feedRepository.subscribeToUserData()
+
+                    // Wait for follow list to arrive from relays (with timeout)
+                    val hasFollows = withTimeoutOrNull(3000L) {
+                        feedRepository.followList.first { it.isNotEmpty() }
+                        true
+                    } ?: false
+
+                    if (hasFollows) {
+                        _feedMode.value = FeedMode.FOLLOWING
+                        feedRepository.subscribeToFollowedFeed()
+                    } else {
+                        _feedMode.value = FeedMode.TRENDING
+                        feedRepository.subscribeToFeed()
+                    }
                     return@collect
                 }
             }
@@ -190,7 +251,11 @@ class FeedViewModel @Inject constructor(
             kotlinx.coroutines.delay(500)
             feedRepository.clearCache()
             when (_feedMode.value) {
-                FeedMode.FOLLOWING -> feedRepository.subscribeToFollowedFeed()
+                FeedMode.FOLLOWING -> {
+                    if (!feedRepository.subscribeToFollowedFeed()) {
+                        _feedMode.value = FeedMode.TRENDING
+                    }
+                }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
             }
             _isRefreshing.value = false
@@ -298,6 +363,6 @@ data class FeedUiState(
     val isEmpty: Boolean = true,
     val error: String? = null,
     val canZap: Boolean = false,
-    val feedMode: FeedMode = FeedMode.TRENDING,
+    val feedMode: FeedMode = FeedMode.FOLLOWING,
     val hasFollows: Boolean = false
 )

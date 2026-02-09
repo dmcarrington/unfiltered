@@ -23,17 +23,24 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,7 +63,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,9 +77,11 @@ import com.nostr.unfiltered.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.ui.components.PhotoCard
 import com.nostr.unfiltered.viewmodel.FeedMode
 import com.nostr.unfiltered.viewmodel.FeedViewModel
+import com.nostr.unfiltered.viewmodel.NotificationsViewModel
 import com.nostr.unfiltered.viewmodel.ZapState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,12 +91,17 @@ fun FeedScreen(
     onSearchClick: () -> Unit,
     onCreatePostClick: () -> Unit,
     onSettingsClick: () -> Unit,
-    viewModel: FeedViewModel = hiltViewModel()
+    onWalletClick: () -> Unit,
+    onNotificationsClick: () -> Unit,
+    viewModel: FeedViewModel = hiltViewModel(),
+    notificationsViewModel: NotificationsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val zapState by viewModel.zapState.collectAsState()
     val pendingLikeIntent by viewModel.pendingLikeIntent.collectAsState()
+    val hasNewPosts by viewModel.hasNewPosts.collectAsState()
+    val hasUnreadNotifications by notificationsViewModel.hasUnread.collectAsState()
     val listState = rememberLazyListState()
 
     // Amber like signing launcher
@@ -117,6 +133,11 @@ fun FeedScreen(
     // Refresh zap status when screen appears
     LaunchedEffect(Unit) {
         viewModel.refreshZapStatus()
+    }
+
+    // Mark feed as read when screen first displays
+    LaunchedEffect(Unit) {
+        viewModel.markFeedAsRead()
     }
 
     // Handle zap state changes
@@ -167,8 +188,11 @@ fun FeedScreen(
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     // Fullscreen image viewer state
-    var selectedImageUrl by remember { mutableStateOf<String?>(null) }
-    var selectedImageAspectRatio by remember { mutableStateOf(1f) }
+    var selectedMediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var selectedMediaIndex by remember { mutableStateOf(0) }
+
+    // Coroutine scope for scroll animations
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -241,6 +265,56 @@ fun FeedScreen(
             FloatingActionButton(onClick = onCreatePostClick) {
                 Icon(Icons.Default.Add, contentDescription = "Create post")
             }
+        },
+        bottomBar = {
+            BottomAppBar {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Home - scroll to top
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(0)
+                            }
+                            viewModel.markFeedAsRead()
+                        }
+                    ) {
+                        Box {
+                            Icon(Icons.Default.Home, contentDescription = "Home")
+                            if (hasNewPosts) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .align(Alignment.TopEnd)
+                                        .background(Color.Red, CircleShape)
+                                )
+                            }
+                        }
+                    }
+
+                    // Wallet
+                    IconButton(onClick = onWalletClick) {
+                        Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Wallet")
+                    }
+
+                    // Notifications
+                    IconButton(onClick = onNotificationsClick) {
+                        Box {
+                            Icon(Icons.Default.Notifications, contentDescription = "Notifications")
+                            if (hasUnreadNotifications) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .align(Alignment.TopEnd)
+                                        .background(Color.Red, CircleShape)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     ) { paddingValues ->
         PullToRefreshBox(
@@ -282,9 +356,19 @@ fun FeedScreen(
                                 onProfileClick = { onProfileClick(post.authorPubkey) },
                                 onLikeClick = { viewModel.likePost(post) },
                                 onZapClick = { viewModel.initiateZap(post) },
-                                onImageClick = {
-                                    selectedImageUrl = post.imageUrl
-                                    selectedImageAspectRatio = post.dimensions?.aspectRatio ?: 1f
+                                onMediaClick = { index, _ ->
+                                    // Use the post's media items if available, otherwise create a single-item list
+                                    selectedMediaItems = if (post.mediaItems.isNotEmpty()) {
+                                        post.mediaItems
+                                    } else {
+                                        listOf(MediaItem(
+                                            url = post.imageUrl,
+                                            dimensions = post.dimensions,
+                                            altText = post.altText,
+                                            isVideo = post.isVideo
+                                        ))
+                                    }
+                                    selectedMediaIndex = index
                                 },
                                 showZapButton = uiState.canZap && !post.authorLud16.isNullOrEmpty()
                             )
@@ -352,11 +436,11 @@ fun FeedScreen(
     }
 
     // Fullscreen Image Viewer Dialog
-    selectedImageUrl?.let { imageUrl ->
+    if (selectedMediaItems.isNotEmpty()) {
         FullscreenImageDialog(
-            imageUrl = imageUrl,
-            aspectRatio = selectedImageAspectRatio,
-            onDismiss = { selectedImageUrl = null }
+            mediaItems = selectedMediaItems,
+            initialIndex = selectedMediaIndex,
+            onDismiss = { selectedMediaItems = emptyList() }
         )
     }
 }
@@ -536,37 +620,93 @@ private fun EmptyFeedState(feedMode: FeedMode = FeedMode.TRENDING) {
 
 @Composable
 private fun FullscreenImageDialog(
-    imageUrl: String,
-    aspectRatio: Float,
+    mediaItems: List<MediaItem>,
+    initialIndex: Int,
     onDismiss: () -> Unit
 ) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, (mediaItems.size - 1).coerceAtLeast(0)),
+        pageCount = { mediaItems.size }
+    )
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
-            dismissOnClickOutside = true
+            dismissOnClickOutside = false
         )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.9f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                ),
-            contentAlignment = Alignment.Center
+                .background(Color.Black.copy(alpha = 0.95f))
         ) {
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = "Full size image",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                contentScale = ContentScale.Fit
-            )
+            // Swipeable image pager
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val item = mediaItems[page]
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onDismiss
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = item.url,
+                        contentDescription = item.altText ?: "Image ${page + 1}",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+
+            // Page indicator (only show if multiple images)
+            if (mediaItems.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    repeat(mediaItems.size) { index ->
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    color = if (pagerState.currentPage == index)
+                                        Color.White
+                                    else
+                                        Color.White.copy(alpha = 0.5f),
+                                    shape = CircleShape
+                                )
+                        )
+                    }
+                }
+
+                // Page counter text
+                Text(
+                    text = "${pagerState.currentPage + 1} / ${mediaItems.size}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 48.dp)
+                        .background(
+                            color = Color.Black.copy(alpha = 0.5f),
+                            shape = CircleShape
+                        )
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
         }
     }
 }

@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.4] - 2026-02-09
+
+### New Features
+
+- **Bottom Navigation Bar**: Added bottom bar with Home, Wallet, and Notifications tabs for easier navigation.
+
+- **Notifications**: Track reactions, zaps, and mentions on your posts. Notification state persists across app restarts. Home icon shows a red dot when new posts arrive.
+
+- **NWC Wallet**: Added Nostr Wallet Connect support with QR code scanning, balance display, transaction history, and Lightning invoice payments.
+
+- **Video Posts**: Support for uploading and viewing video posts.
+
+- **Multi-Image Posts**: Handle posts containing multiple images.
+
+- **Mute/Unmute Users**: Added ability to mute and unmute users.
+
+- **Following & Muted Lists**: View your following and muted user lists in Settings.
+
+### Bug Fixes
+
+- **Reaction Counts**: Fixed reaction counts to show totals from all users, not just your own.
+
+- **Following Feed Initialization**: Fixed an issue where the following feed wasn't initialized correctly on startup.
+
+- **Notifications**: Fixed notification delivery and tracking issues.
+
 ## [1.0.3] - 2026-02-05
 
 ### New Features

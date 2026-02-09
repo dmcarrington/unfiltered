@@ -73,8 +73,12 @@ class BlossomClient @Inject constructor(
             val rawBytes = inputStream.use { it.readBytes() }
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
 
-            // Strip EXIF metadata (location, camera info, etc.) for privacy
-            val bytes = stripExifMetadata(rawBytes, mimeType)
+            // Strip EXIF metadata for images only (not applicable to videos)
+            val bytes = if (mimeType.startsWith("video/")) {
+                rawBytes
+            } else {
+                stripExifMetadata(rawBytes, mimeType)
+            }
 
             val sha256 = calculateSha256(bytes)
             val unsignedAuthEvent = createUnsignedAuthorizationEvent(sha256, mimeType, bytes.size.toLong())
@@ -162,8 +166,12 @@ class BlossomClient @Inject constructor(
             // Get mime type
             val mimeType = context.contentResolver.getType(imageUri) ?: "image/jpeg"
 
-            // Strip EXIF metadata (location, camera info, etc.) for privacy
-            val bytes = stripExifMetadata(rawBytes, mimeType)
+            // Strip EXIF metadata for images only (not applicable to videos)
+            val bytes = if (mimeType.startsWith("video/")) {
+                rawBytes
+            } else {
+                stripExifMetadata(rawBytes, mimeType)
+            }
 
             // Calculate SHA-256 hash
             val sha256 = calculateSha256(bytes)

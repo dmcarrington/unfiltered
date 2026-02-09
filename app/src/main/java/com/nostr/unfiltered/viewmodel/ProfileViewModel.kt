@@ -9,6 +9,7 @@ import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
+import com.nostr.unfiltered.repository.MuteListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +26,8 @@ class ProfileViewModel @Inject constructor(
     private val nostrClient: NostrClient,
     private val keyManager: KeyManager,
     private val feedRepository: FeedRepository,
-    private val searchService: SearchService
+    private val searchService: SearchService,
+    private val muteListRepository: MuteListRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfileUiState())
@@ -57,6 +59,15 @@ class ProfileViewModel @Inject constructor(
                         isFollowing = follows.contains(pubkey),
                         followingCount = if (state.isOwnProfile) follows.size else state.followingCount
                     )
+                }
+            }
+        }
+
+        // Observe mute list
+        viewModelScope.launch {
+            muteListRepository.muteList.collect { mutedUsers ->
+                _uiState.update { state ->
+                    state.copy(isMuted = pubkey in mutedUsers)
                 }
             }
         }
@@ -260,6 +271,18 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
+    fun toggleMute() {
+        val pubkey = currentPubkey ?: return
+
+        viewModelScope.launch {
+            if (_uiState.value.isMuted) {
+                muteListRepository.unmuteUser(pubkey)
+            } else {
+                muteListRepository.muteUser(pubkey)
+            }
+        }
+    }
+
     /**
      * Handle the signed contact list event returned from Amber
      */
@@ -290,6 +313,7 @@ data class ProfileUiState(
     val metadata: UserMetadata? = null,
     val posts: List<PhotoPost> = emptyList(),
     val isFollowing: Boolean = false,
+    val isMuted: Boolean = false,
     val isOwnProfile: Boolean = false,
     val error: String? = null,
     val followingCount: Int = 0,

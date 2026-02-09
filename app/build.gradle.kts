@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.dagger.hilt.android")
     kotlin("kapt")
 }
@@ -24,7 +25,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.3"
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -117,6 +118,11 @@ dependencies {
 
     // Coil for image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-video:2.7.0")
+
+    // Media3 ExoPlayer for video playback
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
 
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.1.1")
@@ -126,6 +132,15 @@ dependencies {
 
     // JSON serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    // QR Code scanning with ML Kit
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // CameraX for camera preview
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

@@ -8,6 +8,7 @@ import com.nostr.unfiltered.nostr.NostrEvent
 import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.ContactList
 import com.nostr.unfiltered.nostr.models.ImageDimensions
+import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import rust.nostr.protocol.Event
 import rust.nostr.protocol.EventBuilder
+import rust.nostr.protocol.EventId
 import rust.nostr.protocol.Filter
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.PublicKey
@@ -44,6 +46,9 @@ class FeedRepository @Inject constructor(
     // Track which posts the current user has liked (event IDs)
     private val myLikedPosts = mutableSetOf<String>()
 
+    // Track seen reaction event IDs to prevent double-counting
+    private val seenReactionIds = mutableSetOf<String>()
+
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
     val posts: StateFlow<List<PhotoPost>> = _posts.asStateFlow()
 
@@ -52,6 +57,13 @@ class FeedRepository @Inject constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    // Callback for new post detection (used by FeedViewModel for new posts indicator)
+    private var newestPostCallback: ((Long) -> Unit)? = null
+
+    fun setNewestPostCallback(callback: (Long) -> Unit) {
+        newestPostCallback = callback
+    }
 
     // Amber signing flow for follow/unfollow
     private val _pendingFollowIntent = MutableStateFlow<Intent?>(null)
@@ -126,6 +138,13 @@ class FeedRepository @Inject constructor(
     }
 
     private fun handleReactionEvent(event: Event) {
+        val reactionId = event.id().toHex()
+
+        // Skip if we've already processed this reaction
+        if (!seenReactionIds.add(reactionId)) {
+            return
+        }
+
         val tags = parseTagsFromEvent(event)
         val targetEventId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1) ?: return
         val reactorPubkey = event.author().toHex()
@@ -152,10 +171,17 @@ class FeedRepository @Inject constructor(
     private val pendingMetadataFetches = mutableSetOf<String>()
     private var metadataFetchJob: kotlinx.coroutines.Job? = null
 
+    // Pending post IDs that need reaction fetching
+    private val pendingReactionFetches = mutableSetOf<String>()
+    private var reactionFetchJob: kotlinx.coroutines.Job? = null
+
     private fun handlePhotoPostEvent(event: Event) {
         val post = parsePhotoPost(event) ?: return
         postsCache[post.id] = post
         refreshPostsList()
+
+        // Notify about new post timestamp for new posts indicator
+        newestPostCallback?.invoke(post.createdAt)
 
         // Queue metadata fetch if not cached
         if (!metadataCache.contains(post.authorPubkey)) {
@@ -164,6 +190,12 @@ class FeedRepository @Inject constructor(
             }
             scheduleBatchMetadataFetch()
         }
+
+        // Queue reaction fetch for this post
+        synchronized(pendingReactionFetches) {
+            pendingReactionFetches.add(post.id)
+        }
+        scheduleBatchReactionFetch()
     }
 
     private fun scheduleBatchMetadataFetch() {
@@ -197,39 +229,66 @@ class FeedRepository @Inject constructor(
         }
     }
 
-    fun parsePhotoPost(event: Event): PhotoPost? {
-        val tags = parseTagsFromEvent(event)
+    private fun scheduleBatchReactionFetch() {
+        // Cancel existing job if still pending
+        if (reactionFetchJob?.isActive == true) return
 
-        // Find imeta tag with image URL
-        val imetaTag = tags.find { it.size >= 2 && it[0] == "imeta" }
-        var imageUrl: String? = null
-        var blurhash: String? = null
-        var dimensions: ImageDimensions? = null
-        var altText: String? = null
-        val fallbackUrls = mutableListOf<String>()
+        reactionFetchJob = scope.launch {
+            // Small delay to batch multiple requests
+            kotlinx.coroutines.delay(500)
 
-        if (imetaTag != null) {
-            // Parse imeta tag values
-            for (i in 1 until imetaTag.size) {
-                val part = imetaTag[i]
-                when {
-                    part.startsWith("url ") -> imageUrl = part.removePrefix("url ")
-                    part.startsWith("blurhash ") -> blurhash = part.removePrefix("blurhash ")
-                    part.startsWith("dim ") -> {
-                        val dimStr = part.removePrefix("dim ")
-                        val parts = dimStr.split("x")
-                        if (parts.size == 2) {
-                            dimensions = ImageDimensions(
-                                parts[0].toIntOrNull() ?: 0,
-                                parts[1].toIntOrNull() ?: 0
-                            )
+            val postIdsToFetch: List<String>
+            synchronized(pendingReactionFetches) {
+                postIdsToFetch = pendingReactionFetches.toList()
+                pendingReactionFetches.clear()
+            }
+
+            if (postIdsToFetch.isNotEmpty()) {
+                try {
+                    // Subscribe to reactions (Kind 7) for these posts
+                    val eventIds = postIdsToFetch.mapNotNull { postId ->
+                        try {
+                            EventId.fromHex(postId)
+                        } catch (e: Exception) {
+                            null
                         }
                     }
-                    part.startsWith("alt ") -> altText = part.removePrefix("alt ")
-                    part.startsWith("fallback ") -> fallbackUrls.add(part.removePrefix("fallback "))
+
+                    if (eventIds.isNotEmpty()) {
+                        val reactionsFilter = Filter()
+                            .kind(Kind(7u))
+                            .events(eventIds)
+                            .limit(500u)
+
+                        nostrClient.subscribe("post_reactions", listOf(reactionsFilter))
+                    }
+                } catch (e: Exception) {
+                    // Handle error silently
                 }
             }
         }
+    }
+
+    fun parsePhotoPost(event: Event): PhotoPost? {
+        val tags = parseTagsFromEvent(event)
+
+        // Find ALL imeta tags (posts can have multiple images)
+        val imetaTags = tags.filter { it.size >= 2 && it[0] == "imeta" }
+        val mediaItems = mutableListOf<MediaItem>()
+
+        for (imetaTag in imetaTags) {
+            val item = parseImetaTag(imetaTag)
+            if (item != null) {
+                mediaItems.add(item)
+            }
+        }
+
+        // Primary image info (from first imeta or fallback sources)
+        var imageUrl: String? = mediaItems.firstOrNull()?.url
+        var blurhash: String? = mediaItems.firstOrNull()?.blurhash
+        var dimensions: ImageDimensions? = mediaItems.firstOrNull()?.dimensions
+        var altText: String? = mediaItems.firstOrNull()?.altText
+        var fallbackUrls: List<String> = mediaItems.firstOrNull()?.fallbackUrls ?: emptyList()
 
         // Also check for standalone url tag or image tag
         if (imageUrl == null) {
@@ -239,15 +298,35 @@ class FeedRepository @Inject constructor(
             imageUrl = tags.find { it.size >= 2 && it[0] == "image" }?.get(1)
         }
 
-        // Check content for image URL if still not found
+        // Check content for image or video URLs if still not found
         if (imageUrl == null) {
             val content = event.content()
-            val urlRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
-            imageUrl = urlRegex.find(content)?.value
+            // Try image first
+            val imageRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
+            imageUrl = imageRegex.find(content)?.value
+
+            // Try video if no image found
+            if (imageUrl == null) {
+                val videoRegex = Regex("https?://[^\\s]+\\.(mp4|webm|mov|m4v)", RegexOption.IGNORE_CASE)
+                imageUrl = videoRegex.find(content)?.value
+            }
+
+            // If found in content and no imeta tags, try to find all media URLs
+            if (imageUrl != null && mediaItems.isEmpty()) {
+                val allMediaRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m4v)", RegexOption.IGNORE_CASE)
+                allMediaRegex.findAll(content).forEach { match ->
+                    val url = match.value
+                    val isVideo = isVideoUrl(url)
+                    mediaItems.add(MediaItem(url = url, isVideo = isVideo))
+                }
+            }
         }
 
-        // Must have an image URL
+        // Must have a media URL
         if (imageUrl == null) return null
+
+        // Determine if primary is a video based on file extension
+        val isVideo = isVideoUrl(imageUrl)
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val authorPubkey = event.author().toHex()
@@ -265,6 +344,8 @@ class FeedRepository @Inject constructor(
             dimensions = dimensions,
             altText = altText,
             fallbackUrls = fallbackUrls,
+            isVideo = isVideo,
+            mediaItems = mediaItems,
             authorName = metadata?.bestName,
             authorAvatar = metadata?.picture,
             authorNip05 = metadata?.nip05,
@@ -272,6 +353,62 @@ class FeedRepository @Inject constructor(
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
             isLiked = myLikedPosts.contains(eventId)
         )
+    }
+
+    /**
+     * Parse a single imeta tag into a MediaItem
+     */
+    private fun parseImetaTag(imetaTag: List<String>): MediaItem? {
+        var url: String? = null
+        var mimeType: String? = null
+        var blurhash: String? = null
+        var dimensions: ImageDimensions? = null
+        var altText: String? = null
+        val fallbackUrls = mutableListOf<String>()
+
+        for (i in 1 until imetaTag.size) {
+            val part = imetaTag[i]
+            when {
+                part.startsWith("url ") -> url = part.removePrefix("url ")
+                part.startsWith("m ") -> mimeType = part.removePrefix("m ")
+                part.startsWith("blurhash ") -> blurhash = part.removePrefix("blurhash ")
+                part.startsWith("dim ") -> {
+                    val dimStr = part.removePrefix("dim ")
+                    val parts = dimStr.split("x")
+                    if (parts.size == 2) {
+                        dimensions = ImageDimensions(
+                            parts[0].toIntOrNull() ?: 0,
+                            parts[1].toIntOrNull() ?: 0
+                        )
+                    }
+                }
+                part.startsWith("alt ") -> altText = part.removePrefix("alt ")
+                part.startsWith("fallback ") -> fallbackUrls.add(part.removePrefix("fallback "))
+            }
+        }
+
+        if (url == null) return null
+
+        val isVideo = mimeType?.startsWith("video/") == true || isVideoUrl(url)
+
+        return MediaItem(
+            url = url,
+            mimeType = mimeType,
+            blurhash = blurhash,
+            dimensions = dimensions,
+            altText = altText,
+            fallbackUrls = fallbackUrls,
+            isVideo = isVideo
+        )
+    }
+
+    /**
+     * Check if a URL points to a video based on file extension
+     */
+    private fun isVideoUrl(url: String): Boolean {
+        return url.lowercase().let {
+            it.endsWith(".mp4") || it.endsWith(".webm") || it.endsWith(".mov") || it.endsWith(".m4v")
+        }
     }
 
     private fun parseTagsFromEvent(event: Event): List<List<String>> {
@@ -316,6 +453,25 @@ class FeedRepository @Inject constructor(
 
     // ==================== Subscription Management ====================
 
+    fun subscribeToUserData() {
+        _isLoading.value = true
+        val myPubkey = keyManager.getPublicKeyHex() ?: return
+
+        val followListFilter = Filter()
+            .kind(Kind(3u))
+            .author(PublicKey.fromHex(myPubkey))
+            .limit(1u)
+
+        nostrClient.subscribe("my_follows", listOf(followListFilter))
+
+        val myReactionsFilter = Filter()
+            .kind(Kind(7u))
+            .author(PublicKey.fromHex(myPubkey))
+            .limit(500u)
+
+        nostrClient.subscribe("my_reactions", listOf(myReactionsFilter))
+    }
+
     fun subscribeToFeed() {
         _isLoading.value = true
 
@@ -355,12 +511,12 @@ class FeedRepository @Inject constructor(
         _isLoading.value = false
     }
 
-    fun subscribeToFollowedFeed() {
+    fun subscribeToFollowedFeed(): Boolean {
         val follows = _followList.value
         if (follows.isEmpty()) {
-            // No follows yet, subscribe to global feed
+            // No follows yet, fall back to global feed
             subscribeToFeed()
-            return
+            return false
         }
 
         _isLoading.value = true
@@ -411,6 +567,7 @@ class FeedRepository @Inject constructor(
         }
 
         _isLoading.value = false
+        return true
     }
 
     fun fetchUserMetadata(pubkey: String) {
@@ -435,6 +592,10 @@ class FeedRepository @Inject constructor(
         return postsCache.values
             .filter { it.authorPubkey == pubkey }
             .sortedByDescending { it.createdAt }
+    }
+
+    fun getPostImageUrl(postId: String): String? {
+        return postsCache[postId]?.imageUrl
     }
 
     // ==================== Actions ====================
@@ -608,6 +769,8 @@ class FeedRepository @Inject constructor(
 
     fun clearCache() {
         postsCache.clear()
+        seenReactionIds.clear()
+        myLikedPosts.clear()
         _posts.value = emptyList()
     }
 
