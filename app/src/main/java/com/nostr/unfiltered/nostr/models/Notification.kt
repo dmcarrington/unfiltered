@@ -21,5 +21,6 @@ data class Notification(
 enum class NotificationType {
     REACTION,
     ZAP,
-    MENTION
+    MENTION,
+    FOLLOW
 }
