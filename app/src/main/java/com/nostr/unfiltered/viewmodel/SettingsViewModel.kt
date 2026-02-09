@@ -5,6 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.NwcService
+import com.nostr.unfiltered.nostr.SearchService
+import com.nostr.unfiltered.nostr.models.UserMetadata
+import com.nostr.unfiltered.repository.FeedRepository
+import com.nostr.unfiltered.repository.MuteListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +22,10 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val keyManager: KeyManager,
     private val nostrClient: NostrClient,
-    private val nwcService: NwcService
+    private val nwcService: NwcService,
+    private val feedRepository: FeedRepository,
+    private val muteListRepository: MuteListRepository,
+    private val searchService: SearchService
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -28,6 +35,8 @@ class SettingsViewModel @Inject constructor(
         loadSettings()
         observeRelayStatus()
         loadNwcStatus()
+        observeFollowList()
+        observeMuteList()
     }
 
     private fun loadNwcStatus() {
@@ -76,6 +85,75 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    private fun observeFollowList() {
+        viewModelScope.launch {
+            feedRepository.followList.collect { follows ->
+                _uiState.update { it.copy(followingCount = follows.size, followingUsers = emptyList()) }
+            }
+        }
+    }
+
+    private fun observeMuteList() {
+        viewModelScope.launch {
+            muteListRepository.muteList.collect { muted ->
+                _uiState.update { it.copy(mutedCount = muted.size, mutedUsers = emptyList()) }
+            }
+        }
+    }
+
+    fun selectTab(tab: SettingsTab) {
+        _uiState.update { it.copy(selectedTab = tab) }
+        when (tab) {
+            SettingsTab.FOLLOWING -> loadFollowingUsers()
+            SettingsTab.MUTED -> loadMutedUsers()
+            SettingsTab.SETTINGS -> {}
+        }
+    }
+
+    private fun loadFollowingUsers() {
+        if (_uiState.value.followingUsers.isNotEmpty()) return
+        _uiState.update { it.copy(isLoadingFollowList = true) }
+
+        viewModelScope.launch {
+            val follows = feedRepository.followList.value.toList()
+            val cached = follows.mapNotNull { feedRepository.getUserMetadata(it) }
+            if (cached.isNotEmpty()) {
+                _uiState.update { it.copy(followingUsers = cached.sortedBy { u -> u.bestName?.lowercase() ?: "zzz" }) }
+            }
+            val missingPubkeys = follows.filter { feedRepository.getUserMetadata(it) == null }
+            if (missingPubkeys.isNotEmpty()) {
+                try {
+                    val fetched = searchService.fetchMetadataForPubkeys(missingPubkeys)
+                    val allUsers = (cached + fetched).distinctBy { it.pubkey }
+                    _uiState.update { it.copy(followingUsers = allUsers.sortedBy { u -> u.bestName?.lowercase() ?: "zzz" }) }
+                } catch (_: Exception) { }
+            }
+            _uiState.update { it.copy(isLoadingFollowList = false) }
+        }
+    }
+
+    private fun loadMutedUsers() {
+        if (_uiState.value.mutedUsers.isNotEmpty()) return
+        _uiState.update { it.copy(isLoadingMuteList = true) }
+
+        viewModelScope.launch {
+            val muted = muteListRepository.muteList.value.toList()
+            val cached = muted.mapNotNull { feedRepository.getUserMetadata(it) }
+            if (cached.isNotEmpty()) {
+                _uiState.update { it.copy(mutedUsers = cached.sortedBy { u -> u.bestName?.lowercase() ?: "zzz" }) }
+            }
+            val missingPubkeys = muted.filter { feedRepository.getUserMetadata(it) == null }
+            if (missingPubkeys.isNotEmpty()) {
+                try {
+                    val fetched = searchService.fetchMetadataForPubkeys(missingPubkeys)
+                    val allUsers = (cached + fetched).distinctBy { it.pubkey }
+                    _uiState.update { it.copy(mutedUsers = allUsers.sortedBy { u -> u.bestName?.lowercase() ?: "zzz" }) }
+                } catch (_: Exception) { }
+            }
+            _uiState.update { it.copy(isLoadingMuteList = false) }
         }
     }
 
@@ -152,6 +230,12 @@ class SettingsViewModel @Inject constructor(
     }
 }
 
+enum class SettingsTab {
+    SETTINGS,
+    FOLLOWING,
+    MUTED
+}
+
 data class SettingsUiState(
     val pubkeyHex: String? = null,
     val npub: String? = null,
@@ -160,7 +244,14 @@ data class SettingsUiState(
     val isNwcConfigured: Boolean = false,
     val nwcError: String? = null,
     val isLoggedOut: Boolean = false,
-    val clipboardText: String? = null
+    val clipboardText: String? = null,
+    val selectedTab: SettingsTab = SettingsTab.SETTINGS,
+    val followingCount: Int = 0,
+    val mutedCount: Int = 0,
+    val followingUsers: List<UserMetadata> = emptyList(),
+    val mutedUsers: List<UserMetadata> = emptyList(),
+    val isLoadingFollowList: Boolean = false,
+    val isLoadingMuteList: Boolean = false
 )
 
 data class RelayInfo(
