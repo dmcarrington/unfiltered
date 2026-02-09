@@ -24,18 +24,22 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -67,8 +71,9 @@ fun NotificationsScreen(
     onBackClick: () -> Unit,
     viewModel: NotificationsViewModel = hiltViewModel()
 ) {
-    val notifications by viewModel.notifications.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     var selectedPreview by remember { mutableStateOf<PostPreviewData?>(null) }
+    var selectedTabIndex by remember { mutableIntStateOf(0) }
 
     // Mark as read when screen is displayed
     LaunchedEffect(Unit) {
@@ -97,45 +102,80 @@ fun NotificationsScreen(
             )
         }
     ) { padding ->
-        if (notifications.isEmpty()) {
-            EmptyNotificationsState(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            val tabLabels = listOf(
+                "Following (${uiState.followingNotifications.size})",
+                "Others (${uiState.otherNotifications.size})"
             )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
-                items(
-                    items = notifications,
-                    key = { it.id }
-                ) { notification ->
-                    NotificationItem(
-                        notification = notification,
-                        onClick = {
-                            // Only show preview for reactions and mentions
-                            if (notification.type != NotificationType.ZAP) {
-                                val imageUrl = notification.targetPostImageUrl
-                                    ?: viewModel.getPostImageUrl(notification.targetPostId)
-                                val content = notification.targetPostContent
 
-                                // Show dialog if we have content or an image
-                                if (content != null || imageUrl != null) {
-                                    selectedPreview = PostPreviewData(
-                                        imageUrl = imageUrl,
-                                        content = content,
-                                        authorName = notification.actorName
-                                    )
-                                }
-                            }
-                        }
+            TabRow(selectedTabIndex = selectedTabIndex) {
+                tabLabels.forEachIndexed { index, label ->
+                    Tab(
+                        selected = selectedTabIndex == index,
+                        onClick = { selectedTabIndex = index },
+                        text = { Text(label) }
                     )
-                    HorizontalDivider()
                 }
             }
+
+            val notifications = when (selectedTabIndex) {
+                0 -> uiState.followingNotifications
+                else -> uiState.otherNotifications
+            }
+
+            if (notifications.isEmpty()) {
+                EmptyNotificationsState(
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                NotificationsList(
+                    notifications = notifications,
+                    viewModel = viewModel,
+                    onShowPreview = { selectedPreview = it }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationsList(
+    notifications: List<Notification>,
+    viewModel: NotificationsViewModel,
+    onShowPreview: (PostPreviewData) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        items(
+            items = notifications,
+            key = { it.id }
+        ) { notification ->
+            NotificationItem(
+                notification = notification,
+                onClick = {
+                    if (notification.type != NotificationType.ZAP && notification.type != NotificationType.FOLLOW) {
+                        val imageUrl = notification.targetPostImageUrl
+                            ?: viewModel.getPostImageUrl(notification.targetPostId)
+                        val content = notification.targetPostContent
+
+                        if (content != null || imageUrl != null) {
+                            onShowPreview(
+                                PostPreviewData(
+                                    imageUrl = imageUrl,
+                                    content = content,
+                                    authorName = notification.actorName
+                                )
+                            )
+                        }
+                    }
+                }
+            )
+            HorizontalDivider()
         }
     }
 }
@@ -167,7 +207,6 @@ private fun PostPreviewDialog(
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Show author name if available
                 if (authorName != null) {
                     Text(
                         text = authorName,
@@ -178,7 +217,6 @@ private fun PostPreviewDialog(
                     )
                 }
 
-                // Show text content if available
                 if (content != null) {
                     Text(
                         text = content,
@@ -190,7 +228,6 @@ private fun PostPreviewDialog(
                     )
                 }
 
-                // Show image if available
                 if (imageUrl != null) {
                     AsyncImage(
                         model = imageUrl,
@@ -209,8 +246,7 @@ private fun NotificationItem(
     notification: Notification,
     onClick: () -> Unit
 ) {
-    // Make reactions and mentions clickable (not zaps)
-    val isClickable = notification.type != NotificationType.ZAP
+    val isClickable = notification.type != NotificationType.ZAP && notification.type != NotificationType.FOLLOW
 
     Row(
         modifier = Modifier
@@ -260,9 +296,10 @@ private fun NotificationItem(
                     .clip(CircleShape)
                     .background(
                         when (notification.type) {
-                            NotificationType.REACTION -> Color(0xFFE91E63) // Pink
-                            NotificationType.ZAP -> Color(0xFFFFD700) // Gold
-                            NotificationType.MENTION -> Color(0xFF2196F3) // Blue
+                            NotificationType.REACTION -> Color(0xFFE91E63)
+                            NotificationType.ZAP -> Color(0xFFFFD700)
+                            NotificationType.MENTION -> Color(0xFF2196F3)
+                            NotificationType.FOLLOW -> Color(0xFF4CAF50)
                         }
                     ),
                 contentAlignment = Alignment.Center
@@ -272,6 +309,7 @@ private fun NotificationItem(
                         NotificationType.REACTION -> Icons.Default.Favorite
                         NotificationType.ZAP -> Icons.Default.Bolt
                         NotificationType.MENTION -> Icons.Default.AlternateEmail
+                        NotificationType.FOLLOW -> Icons.Default.PersonAdd
                     },
                     contentDescription = null,
                     modifier = Modifier.size(12.dp),
@@ -304,6 +342,7 @@ private fun NotificationItem(
                         if (amount != null) "zapped $amount sats" else "zapped your post"
                     }
                     NotificationType.MENTION -> "mentioned you"
+                    NotificationType.FOLLOW -> "followed you"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

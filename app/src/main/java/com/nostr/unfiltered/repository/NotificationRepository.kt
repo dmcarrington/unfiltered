@@ -56,20 +56,24 @@ class NotificationRepository @Inject constructor(
     private fun observeEvents() {
         scope.launch {
             nostrClient.events.collect { nostrEvent ->
-                handleEvent(nostrEvent)
+                val event = nostrEvent.event
+                val kind = event.kind().asU16().toInt()
+
+                // Track our own posts from any subscription
+                if (kind == 20) {
+                    trackMyPost(event)
+                }
+
+                // Only process notification events from our dedicated subscription
+                if (nostrEvent.subscriptionId == "notifications") {
+                    when (kind) {
+                        7 -> handleReactionEvent(event)
+                        9735 -> handleZapReceiptEvent(event)
+                        1 -> handlePotentialMention(event)
+                        3 -> handleFollowEvent(event)
+                    }
+                }
             }
-        }
-    }
-
-    private fun handleEvent(nostrEvent: NostrEvent) {
-        val event = nostrEvent.event
-        val kind = event.kind().asU16().toInt()
-
-        when (kind) {
-            7 -> handleReactionEvent(event)
-            9735 -> handleZapReceiptEvent(event)
-            1 -> handlePotentialMention(event)
-            20 -> trackMyPost(event)
         }
     }
 
@@ -181,6 +185,36 @@ class NotificationRepository @Inject constructor(
         }
     }
 
+    private fun handleFollowEvent(event: Event) {
+        val myPubkey = keyManager.getPublicKeyHex() ?: return
+        val actorPubkey = event.author().toHex()
+        if (actorPubkey == myPubkey) return
+
+        val tags = parseTagsFromEvent(event)
+        val followedPubkeys = tags.filter { it.size >= 2 && it[0] == "p" }.map { it[1] }
+
+        if (followedPubkeys.contains(myPubkey)) {
+            val metadata = metadataCache.get(actorPubkey)
+
+            // Use a stable ID per author so we only notify once per follower
+            val notificationId = "follow-$actorPubkey"
+
+            scope.launch {
+                notificationService.addNotification(
+                    Notification(
+                        id = notificationId,
+                        type = NotificationType.FOLLOW,
+                        timestamp = event.createdAt().asSecs().toLong(),
+                        actorPubkey = actorPubkey,
+                        actorName = metadata?.bestName,
+                        actorAvatar = metadata?.picture,
+                        targetPostId = ""
+                    )
+                )
+            }
+        }
+    }
+
     private fun extractImageUrlFromContent(content: String): String? {
         val imageRegex = Regex("https?://[^\\s]+\\.(jpg|jpeg|png|gif|webp)", RegexOption.IGNORE_CASE)
         return imageRegex.find(content)?.value
@@ -210,7 +244,13 @@ class NotificationRepository @Inject constructor(
                 .pubkeys(listOf(pk))
                 .limit(50u)
 
-            nostrClient.subscribe("notifications", listOf(reactionsFilter, zapsFilter, mentionsFilter))
+            // Follows - contact lists that include us
+            val followsFilter = Filter()
+                .kind(Kind(3u))
+                .pubkeys(listOf(pk))
+                .limit(50u)
+
+            nostrClient.subscribe("notifications", listOf(reactionsFilter, zapsFilter, mentionsFilter, followsFilter))
         } catch (e: Exception) {
             // Handle subscription error
         }
