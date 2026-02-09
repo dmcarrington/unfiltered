@@ -144,6 +144,9 @@ fun UnfilteredNavGraph(
                     navController.navigate(Screen.Auth.route) {
                         popUpTo(0) { inclusive = true }
                     }
+                },
+                onUserClick = { pubkey ->
+                    navController.navigate(Screen.Profile.createRoute(pubkey))
                 }
             )
         }

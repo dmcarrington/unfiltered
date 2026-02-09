@@ -6,7 +6,9 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -32,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -40,6 +45,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -58,7 +65,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.nostr.unfiltered.ui.components.UserListItem
 import com.nostr.unfiltered.viewmodel.RelayInfo
+import com.nostr.unfiltered.viewmodel.SettingsTab
 import com.nostr.unfiltered.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -67,6 +76,7 @@ fun SettingsScreen(
     onBackClick: () -> Unit,
     onEditProfileClick: () -> Unit,
     onLogout: () -> Unit,
+    onUserClick: (String) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -111,9 +121,198 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
         ) {
+            // Tabs
+            val tabs = listOf(SettingsTab.SETTINGS, SettingsTab.FOLLOWING, SettingsTab.MUTED)
+            val tabLabels = listOf(
+                "Settings",
+                "Following (${uiState.followingCount})",
+                "Muted (${uiState.mutedCount})"
+            )
+            val selectedIndex = tabs.indexOf(uiState.selectedTab)
+
+            TabRow(selectedTabIndex = selectedIndex) {
+                tabs.forEachIndexed { index, tab ->
+                    Tab(
+                        selected = uiState.selectedTab == tab,
+                        onClick = { viewModel.selectTab(tab) },
+                        text = { Text(tabLabels[index]) }
+                    )
+                }
+            }
+
+            when (uiState.selectedTab) {
+                SettingsTab.FOLLOWING -> {
+                    FollowingTabContent(
+                        uiState = uiState,
+                        onUserClick = onUserClick
+                    )
+                }
+                SettingsTab.MUTED -> {
+                    MutedTabContent(
+                        uiState = uiState,
+                        onUserClick = onUserClick
+                    )
+                }
+                SettingsTab.SETTINGS -> {
+                    SettingsTabContent(
+                        uiState = uiState,
+                        viewModel = viewModel,
+                        onEditProfileClick = onEditProfileClick,
+                        onShowAddRelayDialog = { showAddRelayDialog = true },
+                        onShowLogoutDialog = { showLogoutDialog = true },
+                        onShowNwcDialog = { showNwcDialog = true }
+                    )
+                }
+            }
+        }
+    }
+
+    // Add Relay Dialog
+    if (showAddRelayDialog) {
+        AddRelayDialog(
+            onDismiss = { showAddRelayDialog = false },
+            onAdd = { url ->
+                viewModel.addRelay(url)
+                showAddRelayDialog = false
+            }
+        )
+    }
+
+    // Logout Confirmation Dialog
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("Logout") },
+            text = { Text("Are you sure you want to logout? Your keys will be removed from this device.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.logout()
+                        showLogoutDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Logout")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // NWC Connection Dialog
+    if (showNwcDialog) {
+        NwcConnectionDialog(
+            onDismiss = { showNwcDialog = false },
+            onConnect = { connectionString ->
+                viewModel.saveNwcConnection(connectionString)
+                showNwcDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun FollowingTabContent(
+    uiState: com.nostr.unfiltered.viewmodel.SettingsUiState,
+    onUserClick: (String) -> Unit
+) {
+    if (uiState.isLoadingFollowList) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+    } else if (uiState.followingUsers.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Not following anyone yet",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.secondary
+            )
+        }
+    } else {
+        LazyColumn(
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(
+                items = uiState.followingUsers,
+                key = { it.pubkey }
+            ) { user ->
+                UserListItem(
+                    user = user,
+                    onClick = { onUserClick(user.pubkey) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MutedTabContent(
+    uiState: com.nostr.unfiltered.viewmodel.SettingsUiState,
+    onUserClick: (String) -> Unit
+) {
+    if (uiState.isLoadingMuteList) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+    } else if (uiState.mutedUsers.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No muted users",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.secondary
+            )
+        }
+    } else {
+        LazyColumn(
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(
+                items = uiState.mutedUsers,
+                key = { it.pubkey }
+            ) { user ->
+                UserListItem(
+                    user = user,
+                    onClick = { onUserClick(user.pubkey) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTabContent(
+    uiState: com.nostr.unfiltered.viewmodel.SettingsUiState,
+    viewModel: SettingsViewModel,
+    onEditProfileClick: () -> Unit,
+    onShowAddRelayDialog: () -> Unit,
+    onShowLogoutDialog: () -> Unit,
+    onShowNwcDialog: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
             // Account Section
             Text(
                 text = "Account",
@@ -227,7 +426,7 @@ fun SettingsScreen(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
-                IconButton(onClick = { showAddRelayDialog = true }) {
+                IconButton(onClick = onShowAddRelayDialog) {
                     Icon(
                         imageVector = Icons.Default.Add,
                         contentDescription = "Add relay"
@@ -316,7 +515,7 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
-                            onClick = { showNwcDialog = true },
+                            onClick = onShowNwcDialog,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Connect Wallet")
@@ -329,7 +528,7 @@ fun SettingsScreen(
 
             // Logout Button
             OutlinedButton(
-                onClick = { showLogoutDialog = true },
+                onClick = onShowLogoutDialog,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = MaterialTheme.colorScheme.error
@@ -354,56 +553,6 @@ fun SettingsScreen(
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
         }
-    }
-
-    // Add Relay Dialog
-    if (showAddRelayDialog) {
-        AddRelayDialog(
-            onDismiss = { showAddRelayDialog = false },
-            onAdd = { url ->
-                viewModel.addRelay(url)
-                showAddRelayDialog = false
-            }
-        )
-    }
-
-    // Logout Confirmation Dialog
-    if (showLogoutDialog) {
-        AlertDialog(
-            onDismissRequest = { showLogoutDialog = false },
-            title = { Text("Logout") },
-            text = { Text("Are you sure you want to logout? Your keys will be removed from this device.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.logout()
-                        showLogoutDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("Logout")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLogoutDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // NWC Connection Dialog
-    if (showNwcDialog) {
-        NwcConnectionDialog(
-            onDismiss = { showNwcDialog = false },
-            onConnect = { connectionString ->
-                viewModel.saveNwcConnection(connectionString)
-                showNwcDialog = false
-            }
-        )
-    }
 }
 
 @Composable
