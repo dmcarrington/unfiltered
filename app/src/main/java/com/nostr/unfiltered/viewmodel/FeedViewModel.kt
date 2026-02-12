@@ -306,6 +306,7 @@ class FeedViewModel @Inject constructor(
 
             when (result) {
                 is ZapManager.ZapResult.Success -> {
+                    feedRepository.updatePostZapOptimistically(post.id, amountSats)
                     _zapState.value = ZapState.Success(post, amountSats)
                 }
                 is ZapManager.ZapResult.OpenLightningWallet -> {
@@ -336,6 +337,7 @@ class FeedViewModel @Inject constructor(
         // User opened the wallet, assume they might pay
         val currentState = _zapState.value
         if (currentState is ZapState.OpenWallet) {
+            feedRepository.updatePostZapOptimistically(currentState.post.id, currentState.amountSats)
             _zapState.value = ZapState.WalletOpened(currentState.post, currentState.amountSats)
         }
     }
