@@ -42,6 +42,7 @@ data class PhotoPost(
     val isLiked: Boolean = false,
     val likeCount: Int = 0,
     val zapAmount: Long = 0,
+    val isZapped: Boolean = false,
 
     // For display
     val relativeTime: String = ""

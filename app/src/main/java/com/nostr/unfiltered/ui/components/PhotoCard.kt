@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
@@ -170,13 +171,22 @@ fun PhotoCard(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // Zap button
+                // Zap button with amount
                 if (showZapButton) {
                     IconButton(onClick = onZapClick) {
                         Icon(
-                            imageVector = Icons.Filled.Bolt,
-                            contentDescription = "Zap",
-                            tint = Color(0xFFFFD700) // Gold/Lightning color
+                            imageVector = if (post.isZapped) Icons.Filled.Bolt
+                            else Icons.Outlined.Bolt,
+                            contentDescription = if (post.isZapped) "Zapped" else "Zap",
+                            tint = if (post.isZapped) Color(0xFFFFD700)
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    if (post.zapAmount > 0) {
+                        Text(
+                            text = formatZapAmount(post.zapAmount),
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -374,5 +384,21 @@ private fun MediaGridItem(
                 contentScale = ContentScale.Crop
             )
         }
+    }
+}
+
+private fun formatZapAmount(sats: Long): String {
+    return when {
+        sats >= 1_000_000 -> {
+            val millions = sats / 1_000_000
+            val hundredThousands = (sats % 1_000_000) / 100_000
+            if (hundredThousands > 0) "${millions}.${hundredThousands}m" else "${millions}m"
+        }
+        sats >= 1_000 -> {
+            val thousands = sats / 1_000
+            val hundreds = (sats % 1_000) / 100
+            if (hundreds > 0) "${thousands}.${hundreds}k" else "${thousands}k"
+        }
+        else -> "$sats"
     }
 }

@@ -49,6 +49,12 @@ class FeedRepository @Inject constructor(
     // Track seen reaction event IDs to prevent double-counting
     private val seenReactionIds = mutableSetOf<String>()
 
+    // Track which posts the current user has zapped (event IDs)
+    private val myZappedPosts = mutableSetOf<String>()
+
+    // Track seen zap receipt event IDs to prevent double-counting
+    private val seenZapReceiptIds = mutableSetOf<String>()
+
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
     val posts: StateFlow<List<PhotoPost>> = _posts.asStateFlow()
 
@@ -104,6 +110,7 @@ class FeedRepository @Inject constructor(
             3 -> handleContactListEvent(event)
             7 -> handleReactionEvent(event)
             20 -> handlePhotoPostEvent(event)
+            9735 -> handleZapReceiptEvent(event)
         }
     }
 
@@ -163,6 +170,91 @@ class FeedRepository @Inject constructor(
                 isLiked = post.isLiked || isMyReaction
             )
             postsCache[targetEventId] = updatedPost
+            refreshPostsList()
+        }
+    }
+
+    private fun handleZapReceiptEvent(event: Event) {
+        val receiptId = event.id().toHex()
+
+        // Skip if we've already processed this zap receipt
+        if (!seenZapReceiptIds.add(receiptId)) {
+            return
+        }
+
+        val tags = parseTagsFromEvent(event)
+
+        // Find the target event (the post that was zapped)
+        val targetEventId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1) ?: return
+
+        // Extract the zap amount from the embedded zap request in the description tag
+        val amountMsats = extractZapAmountFromDescription(tags)
+        val amountSats = amountMsats / 1000
+
+        if (amountSats <= 0) return
+
+        // Check if this zap was sent by the current user
+        val zapperPubkey = extractZapperPubkey(tags)
+        val myPubkey = keyManager.getPublicKeyHex()
+        val isMyZap = zapperPubkey == myPubkey
+        if (isMyZap) {
+            myZappedPosts.add(targetEventId)
+        }
+
+        // Update zap amount on the target post
+        postsCache[targetEventId]?.let { post ->
+            val updatedPost = post.copy(
+                zapAmount = post.zapAmount + amountSats,
+                isZapped = post.isZapped || isMyZap
+            )
+            postsCache[targetEventId] = updatedPost
+            refreshPostsList()
+        }
+    }
+
+    /**
+     * Extract the zap amount in millisats from the description tag.
+     * The description tag contains the JSON of the original zap request (Kind 9734),
+     * which has an "amount" tag in millisats.
+     */
+    private fun extractZapAmountFromDescription(tags: List<List<String>>): Long {
+        val descriptionJson = tags.find { it.size >= 2 && it[0] == "description" }?.get(1) ?: return 0
+        return try {
+            val zapRequest = JSONObject(descriptionJson)
+            val zapTags = zapRequest.optJSONArray("tags") ?: return 0
+            for (i in 0 until zapTags.length()) {
+                val tag = zapTags.optJSONArray(i) ?: continue
+                if (tag.optString(0) == "amount" && tag.length() >= 2) {
+                    return tag.optString(1).toLongOrNull() ?: 0
+                }
+            }
+            0
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /**
+     * Extract the zapper's pubkey from the description tag.
+     * The zap request's pubkey field is the sender.
+     */
+    private fun extractZapperPubkey(tags: List<List<String>>): String? {
+        val descriptionJson = tags.find { it.size >= 2 && it[0] == "description" }?.get(1) ?: return null
+        return try {
+            val zapRequest = JSONObject(descriptionJson)
+            zapRequest.optString("pubkey", null)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun updatePostZapOptimistically(postId: String, amountSats: Long) {
+        postsCache[postId]?.let { post ->
+            myZappedPosts.add(postId)
+            postsCache[postId] = post.copy(
+                zapAmount = post.zapAmount + amountSats,
+                isZapped = true
+            )
             refreshPostsList()
         }
     }
@@ -261,6 +353,14 @@ class FeedRepository @Inject constructor(
                             .limit(500u)
 
                         nostrClient.subscribe("post_reactions", listOf(reactionsFilter))
+
+                        // Also subscribe to zap receipts (Kind 9735) for these posts
+                        val zapReceiptsFilter = Filter()
+                            .kind(Kind(9735u))
+                            .events(eventIds)
+                            .limit(500u)
+
+                        nostrClient.subscribe("post_zap_receipts", listOf(zapReceiptsFilter))
                     }
                 } catch (e: Exception) {
                     // Handle error silently
@@ -351,7 +451,8 @@ class FeedRepository @Inject constructor(
             authorNip05 = metadata?.nip05,
             authorLud16 = metadata?.lud16,
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
-            isLiked = myLikedPosts.contains(eventId)
+            isLiked = myLikedPosts.contains(eventId),
+            isZapped = myZappedPosts.contains(eventId)
         )
     }
 
@@ -771,6 +872,8 @@ class FeedRepository @Inject constructor(
         postsCache.clear()
         seenReactionIds.clear()
         myLikedPosts.clear()
+        seenZapReceiptIds.clear()
+        myZappedPosts.clear()
         _posts.value = emptyList()
     }
 
