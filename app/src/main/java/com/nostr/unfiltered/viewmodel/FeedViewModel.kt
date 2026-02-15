@@ -4,9 +4,11 @@ import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.KeyManager
+import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.ZapManager
 import com.nostr.unfiltered.nostr.models.PhotoPost
+import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import com.nostr.unfiltered.repository.MuteListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,7 +35,8 @@ class FeedViewModel @Inject constructor(
     private val keyManager: KeyManager,
     private val feedRepository: FeedRepository,
     private val zapManager: ZapManager,
-    private val muteListRepository: MuteListRepository
+    private val muteListRepository: MuteListRepository,
+    private val metadataCache: MetadataCache
 ) : ViewModel() {
 
     val connectionState: StateFlow<NostrClient.ConnectionState> = nostrClient.connectionState
@@ -56,6 +59,11 @@ class FeedViewModel @Inject constructor(
 
     // Amber like signing flow
     val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
+
+    // Current user's profile picture URL (reactive)
+    private val _currentUserPictureUrl = MutableStateFlow<String?>(
+        keyManager.getPublicKeyHex()?.let { metadataCache.get(it)?.picture }
+    )
 
     private val _feedMode = MutableStateFlow(FeedMode.FOLLOWING)
     val feedMode: StateFlow<FeedMode> = _feedMode.asStateFlow()
@@ -86,7 +94,8 @@ class FeedViewModel @Inject constructor(
         _canZap,
         _feedMode,
         feedRepository.followList,
-        muteListRepository.muteList
+        muteListRepository.muteList,
+        _currentUserPictureUrl
     ) { values ->
         val posts = values[0] as List<PhotoPost>
         val connectionState = values[1] as NostrClient.ConnectionState
@@ -96,6 +105,7 @@ class FeedViewModel @Inject constructor(
         val feedMode = values[5] as FeedMode
         val follows = values[6] as Set<String>
         val mutedUsers = values[7] as Set<String>
+        val myPictureUrl = values[8] as String?
 
         val filteredPosts = posts.filter { it.authorPubkey !in mutedUsers }
 
@@ -112,7 +122,8 @@ class FeedViewModel @Inject constructor(
             isEmpty = sortedPosts.isEmpty() && !isLoading,
             canZap = canZap,
             feedMode = feedMode,
-            hasFollows = follows.isNotEmpty()
+            hasFollows = follows.isNotEmpty(),
+            currentUserPictureUrl = myPictureUrl
         )
     }.stateIn(
         viewModelScope,
@@ -127,6 +138,25 @@ class FeedViewModel @Inject constructor(
         checkZapAvailability()
         setupNewPostDetection()
         startNewPostsPolling()
+        observeCurrentUserPicture()
+    }
+
+    private fun observeCurrentUserPicture() {
+        val myPubkey = keyManager.getPublicKeyHex() ?: return
+        viewModelScope.launch {
+            nostrClient.events.collect { nostrEvent ->
+                if (nostrEvent.event.kind().asU16().toInt() == 0 &&
+                    nostrEvent.event.author().toHex() == myPubkey
+                ) {
+                    val metadata = UserMetadata.fromJson(
+                        pubkey = myPubkey,
+                        json = nostrEvent.event.content(),
+                        createdAt = nostrEvent.event.createdAt().asSecs().toLong()
+                    )
+                    _currentUserPictureUrl.value = metadata.picture
+                }
+            }
+        }
     }
 
     private fun setupNewPostDetection() {
@@ -306,6 +336,7 @@ class FeedViewModel @Inject constructor(
 
             when (result) {
                 is ZapManager.ZapResult.Success -> {
+                    feedRepository.updatePostZapOptimistically(post.id, amountSats)
                     _zapState.value = ZapState.Success(post, amountSats)
                 }
                 is ZapManager.ZapResult.OpenLightningWallet -> {
@@ -336,6 +367,7 @@ class FeedViewModel @Inject constructor(
         // User opened the wallet, assume they might pay
         val currentState = _zapState.value
         if (currentState is ZapState.OpenWallet) {
+            feedRepository.updatePostZapOptimistically(currentState.post.id, currentState.amountSats)
             _zapState.value = ZapState.WalletOpened(currentState.post, currentState.amountSats)
         }
     }
@@ -364,5 +396,6 @@ data class FeedUiState(
     val error: String? = null,
     val canZap: Boolean = false,
     val feedMode: FeedMode = FeedMode.FOLLOWING,
-    val hasFollows: Boolean = false
+    val hasFollows: Boolean = false,
+    val currentUserPictureUrl: String? = null
 )

@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.ui.components.PhotoCard
+import com.nostr.unfiltered.ui.components.UserAvatar
 import com.nostr.unfiltered.viewmodel.FeedMode
 import com.nostr.unfiltered.viewmodel.FeedViewModel
 import com.nostr.unfiltered.viewmodel.NotificationsViewModel
@@ -256,7 +257,15 @@ fun FeedScreen(
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }
                     IconButton(onClick = onSettingsClick) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        if (uiState.currentUserPictureUrl != null) {
+                            UserAvatar(
+                                imageUrl = uiState.currentUserPictureUrl,
+                                size = 28.dp,
+                                contentDescription = "Settings"
+                            )
+                        } else {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
                 }
             )

@@ -323,6 +323,22 @@ private fun SettingsTabContent(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // Edit Profile Button
+            Button(
+                onClick = onEditProfileClick,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Edit Profile")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -394,22 +410,6 @@ private fun SettingsTabContent(
                         }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Edit Profile Button
-            Button(
-                onClick = onEditProfileClick,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Edit,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Edit Profile")
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -547,7 +547,7 @@ private fun SettingsTabContent(
 
             // App Info
             Text(
-                text = "Unfiltered v1.0.4",
+                text = "Unfiltered v1.05",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.align(Alignment.CenterHorizontally)

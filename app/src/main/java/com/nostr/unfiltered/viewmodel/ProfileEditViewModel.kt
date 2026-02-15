@@ -1,17 +1,25 @@
 package com.nostr.unfiltered.viewmodel
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nostr.unfiltered.nostr.BlossomClient
 import com.nostr.unfiltered.nostr.KeyManager
+import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 import rust.nostr.protocol.Event
@@ -24,10 +32,13 @@ import javax.inject.Inject
 @HiltViewModel
 class ProfileEditViewModel @Inject constructor(
     private val keyManager: KeyManager,
-    private val nostrClient: NostrClient
+    private val nostrClient: NostrClient,
+    private val blossomClient: BlossomClient,
+    private val metadataCache: MetadataCache
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfileEditUiState())
+    private var pendingPreparedUpload: BlossomClient.PreparedUpload? = null
     val uiState: StateFlow<ProfileEditUiState> = _uiState.asStateFlow()
 
     init {
@@ -39,60 +50,68 @@ class ProfileEditViewModel @Inject constructor(
 
         _uiState.update { it.copy(isLoading = true, pubkey = pubkeyHex) }
 
+        // Use cached metadata for immediate display if available
+        val cached = metadataCache.get(pubkeyHex)
+        if (cached != null) {
+            applyMetadata(cached)
+        }
+
+        // Fetch freshest metadata from relays
         val subscriptionId = "profile_edit_${System.currentTimeMillis()}"
 
         viewModelScope.launch {
             try {
-                // Subscribe to get current metadata
                 val filter = Filter()
                     .kind(Kind(0u))
                     .author(PublicKey.fromHex(pubkeyHex))
                     .limit(1u)
 
-                nostrClient.subscribe(subscriptionId, listOf(filter))
-
-                // Collect events from the stream
-                nostrClient.events.collect { nostrEvent ->
-                    if (nostrEvent.subscriptionId == subscriptionId) {
-                        val event = nostrEvent.event
-                        if (event.kind().asU16().toInt() == 0) {
-                            val metadata = UserMetadata.fromJson(
-                                pubkey = event.author().toHex(),
-                                json = event.content(),
-                                createdAt = event.createdAt().asSecs().toLong()
-                            )
-                            _uiState.update { state ->
-                                state.copy(
-                                    isLoading = false,
-                                    name = metadata.name ?: "",
-                                    displayName = metadata.displayName ?: "",
-                                    about = metadata.about ?: "",
-                                    picture = metadata.picture ?: "",
-                                    banner = metadata.banner ?: "",
-                                    nip05 = metadata.nip05 ?: "",
-                                    lud16 = metadata.lud16 ?: "",
-                                    website = metadata.website ?: "",
-                                    originalMetadata = metadata
-                                )
-                            }
-                            // Unsubscribe after getting the metadata
-                            nostrClient.unsubscribe(subscriptionId)
-                            return@collect
+                val result = withTimeoutOrNull(5000L) {
+                    // Start collector before subscribing to avoid any race
+                    val deferred = async {
+                        nostrClient.events.first { nostrEvent ->
+                            nostrEvent.subscriptionId == subscriptionId &&
+                                nostrEvent.event.kind().asU16().toInt() == 0
                         }
                     }
+                    yield()
+                    nostrClient.subscribe(subscriptionId, listOf(filter))
+                    deferred.await()
+                }
+
+                nostrClient.unsubscribe(subscriptionId)
+
+                if (result != null) {
+                    val metadata = UserMetadata.fromJson(
+                        pubkey = result.event.author().toHex(),
+                        json = result.event.content(),
+                        createdAt = result.event.createdAt().asSecs().toLong()
+                    )
+                    applyMetadata(metadata)
+                } else {
+                    // Timed out — if cache already populated the fields, just clear loading
+                    _uiState.update { it.copy(isLoading = false) }
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLoading = false, error = e.message) }
             }
         }
+    }
 
-        // Set a timeout to stop loading if no metadata found
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(5000)
-            if (_uiState.value.isLoading) {
-                _uiState.update { it.copy(isLoading = false) }
-                nostrClient.unsubscribe(subscriptionId)
-            }
+    private fun applyMetadata(metadata: UserMetadata) {
+        _uiState.update { state ->
+            state.copy(
+                isLoading = false,
+                name = metadata.name ?: "",
+                displayName = metadata.displayName ?: "",
+                about = metadata.about ?: "",
+                picture = metadata.picture ?: "",
+                banner = metadata.banner ?: "",
+                nip05 = metadata.nip05 ?: "",
+                lud16 = metadata.lud16 ?: "",
+                website = metadata.website ?: "",
+                originalMetadata = metadata
+            )
         }
     }
 
@@ -292,6 +311,99 @@ class ProfileEditViewModel @Inject constructor(
         return hash.joinToString("") { "%02x".format(it) }
     }
 
+    fun uploadProfilePicture(context: Context, imageUri: Uri) {
+        _uiState.update { it.copy(isUploadingPicture = true, error = null) }
+
+        viewModelScope.launch {
+            try {
+                if (keyManager.isAmberConnected()) {
+                    val prepareResult = blossomClient.prepareUpload(context, imageUri)
+                    prepareResult.fold(
+                        onSuccess = { prepared ->
+                            pendingPreparedUpload = prepared
+                            val intent = keyManager.createAmberSignEventIntent(
+                                eventJson = prepared.unsignedAuthEvent,
+                                eventId = "blossom_profile_pic"
+                            )
+                            _uiState.update {
+                                it.copy(
+                                    isUploadingPicture = false,
+                                    pendingBlossomAmberIntent = intent
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            _uiState.update {
+                                it.copy(
+                                    isUploadingPicture = false,
+                                    error = error.message ?: "Failed to prepare upload"
+                                )
+                            }
+                        }
+                    )
+                } else {
+                    val uploadResult = blossomClient.uploadImage(context, imageUri)
+                    uploadResult.fold(
+                        onSuccess = { result ->
+                            _uiState.update {
+                                it.copy(isUploadingPicture = false, picture = result.url)
+                            }
+                        },
+                        onFailure = { error ->
+                            _uiState.update {
+                                it.copy(
+                                    isUploadingPicture = false,
+                                    error = error.message ?: "Upload failed"
+                                )
+                            }
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isUploadingPicture = false, error = e.message ?: "Upload failed")
+                }
+            }
+        }
+    }
+
+    fun handleBlossomAmberSignedEvent(signedEventJson: String) {
+        val prepared = pendingPreparedUpload ?: return
+        pendingPreparedUpload = null
+
+        _uiState.update { it.copy(isUploadingPicture = true, pendingBlossomAmberIntent = null) }
+
+        viewModelScope.launch {
+            try {
+                val uploadResult = blossomClient.uploadWithSignedAuth(prepared, signedEventJson)
+                uploadResult.fold(
+                    onSuccess = { result ->
+                        _uiState.update {
+                            it.copy(isUploadingPicture = false, picture = result.url)
+                        }
+                    },
+                    onFailure = { error ->
+                        _uiState.update {
+                            it.copy(
+                                isUploadingPicture = false,
+                                error = error.message ?: "Upload failed"
+                            )
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isUploadingPicture = false, error = e.message ?: "Upload failed")
+                }
+            }
+        }
+    }
+
+    fun clearBlossomAmberIntent() {
+        _uiState.update { it.copy(pendingBlossomAmberIntent = null) }
+        pendingPreparedUpload = null
+    }
+
     fun clearAmberSigningRequest() {
         _uiState.update {
             it.copy(needsAmberSigning = null, pendingMetadataJson = null)
@@ -340,6 +452,10 @@ data class ProfileEditUiState(
     // For Amber signing flow
     val needsAmberSigning: Intent? = null,
     val pendingMetadataJson: String? = null,
+
+    // For Blossom image upload
+    val isUploadingPicture: Boolean = false,
+    val pendingBlossomAmberIntent: Intent? = null,
 
     // Original metadata for comparison
     val originalMetadata: UserMetadata? = null
