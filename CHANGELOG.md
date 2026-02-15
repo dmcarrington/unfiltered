@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.5] - 2026-02-14
+
+### New Features
+
+- **Profile Picture as Settings Icon**: The settings cog icon in the feed top bar is replaced with your profile picture when one is set.
+
+- **Profile Picture Upload**: Added an upload button next to the Profile Picture URL field in Edit Profile. Tap the avatar preview or the upload button to pick an image from your gallery and upload it to a Blossom server. Supports both Amber and local key signing flows.
+
+- **Camera Posts**: Take photos directly from the camera and post them without leaving the app.
+
+- **Zap Totals**: Zap amounts are now displayed alongside posts in the feed.
+
+### Bug Fixes
+
+- **Profile Loading Reliability**: Fixed an issue where the Edit Profile fields would sometimes appear empty, particularly when the trending feed was active. The profile editor now uses cached metadata for instant display and properly terminates its relay subscription.
+
+- **Profile Picture on Startup**: Fixed the user's profile picture not appearing in the top bar on app launch by fetching the current user's metadata (Kind 0) at startup.
+
 ## [1.0.4] - 2026-02-09
 
 ### New Features
