@@ -565,6 +565,13 @@ class FeedRepository @Inject constructor(
 
         nostrClient.subscribe("my_follows", listOf(followListFilter))
 
+        val myMetadataFilter = Filter()
+            .kind(Kind(0u))
+            .author(PublicKey.fromHex(myPubkey))
+            .limit(1u)
+
+        nostrClient.subscribe("my_metadata", listOf(myMetadataFilter))
+
         val myReactionsFilter = Filter()
             .kind(Kind(7u))
             .author(PublicKey.fromHex(myPubkey))
