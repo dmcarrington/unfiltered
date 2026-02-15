@@ -1,10 +1,15 @@
 package com.nostr.unfiltered.ui.screens.profile
 
+import android.app.Activity
+import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.clickable
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
@@ -76,6 +82,43 @@ fun ProfileEditScreen(
             }
         } ?: run {
             viewModel.clearAmberSigningRequest()
+        }
+    }
+
+    // Launcher for gallery image picker (profile picture upload)
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let { viewModel.uploadProfilePicture(context, it) }
+    }
+
+    // Launcher for Blossom upload Amber signing
+    val blossomAmberLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val signedEvent = result.data?.getStringExtra("event")
+                ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
+            if (signedEvent != null) {
+                viewModel.handleBlossomAmberSignedEvent(signedEvent)
+            } else {
+                viewModel.clearBlossomAmberIntent()
+            }
+        } else {
+            viewModel.clearBlossomAmberIntent()
+        }
+    }
+
+    // Launch Blossom Amber signing when needed
+    LaunchedEffect(uiState.pendingBlossomAmberIntent) {
+        uiState.pendingBlossomAmberIntent?.let { intent ->
+            try {
+                blossomAmberLauncher.launch(intent)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to launch Amber: ${e.message}", Toast.LENGTH_LONG).show()
+                viewModel.clearBlossomAmberIntent()
+            }
         }
     }
 
@@ -170,17 +213,26 @@ fun ProfileEditScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp)
             ) {
-                // Avatar preview
+                // Avatar preview (tap to upload)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp),
+                        .padding(vertical = 16.dp)
+                        .clickable {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
                     contentAlignment = Alignment.Center
                 ) {
-                    UserAvatar(
-                        imageUrl = uiState.picture.takeIf { it.isNotBlank() },
-                        size = 100.dp
-                    )
+                    if (uiState.isUploadingPicture) {
+                        CircularProgressIndicator(modifier = Modifier.size(100.dp))
+                    } else {
+                        UserAvatar(
+                            imageUrl = uiState.picture.takeIf { it.isNotBlank() },
+                            size = 100.dp
+                        )
+                    }
                 }
 
                 // Basic Info Section
@@ -217,13 +269,40 @@ fun ProfileEditScreen(
                 // Images Section
                 SectionHeader("Images")
 
-                ProfileTextField(
-                    value = uiState.picture,
-                    onValueChange = { viewModel.updatePicture(it) },
-                    label = "Profile Picture URL",
-                    placeholder = "https://example.com/avatar.jpg",
-                    leadingIcon = Icons.Default.AccountCircle
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ProfileTextField(
+                        value = uiState.picture,
+                        onValueChange = { viewModel.updatePicture(it) },
+                        label = "Profile Picture URL",
+                        placeholder = "https://example.com/avatar.jpg",
+                        leadingIcon = Icons.Default.AccountCircle,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (uiState.isUploadingPicture) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        IconButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FileUpload,
+                                contentDescription = "Upload profile picture"
+                            )
+                        }
+                    }
+                }
 
                 ProfileTextField(
                     value = uiState.banner,
@@ -306,7 +385,8 @@ private fun ProfileTextField(
     iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     supportingText: String? = null,
     singleLine: Boolean = true,
-    maxLines: Int = 1
+    maxLines: Int = 1,
+    modifier: Modifier = Modifier
 ) {
     OutlinedTextField(
         value = value,
@@ -325,7 +405,7 @@ private fun ProfileTextField(
         },
         singleLine = singleLine,
         maxLines = maxLines,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     )
