@@ -24,8 +24,8 @@ android {
         applicationId = "com.nostr.unfiltered"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.5"
+        versionCode = (findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (findProperty("versionName") as String?) ?: "1.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
