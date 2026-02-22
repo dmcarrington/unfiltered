@@ -2,7 +2,9 @@ package com.nostr.unfiltered.nostr
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -47,9 +49,15 @@ class NostrClient @Inject constructor() {
     private val _events = MutableSharedFlow<NostrEvent>(replay = 0, extraBufferCapacity = 1000)
     val events: SharedFlow<NostrEvent> = _events.asSharedFlow()
 
+    // EOSE stream - emits subscription IDs when end-of-stored-events is received
+    private val _eoseEvents = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 100)
+    val eoseEvents: SharedFlow<String> = _eoseEvents.asSharedFlow()
+
     // Connection state
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
+    private var reconnectJob: Job? = null
 
     // Relay status map
     private val _relayStatus = MutableStateFlow<Map<String, RelayStatus>>(emptyMap())
@@ -75,6 +83,22 @@ class NostrClient @Inject constructor() {
         }
 
         updateConnectionState()
+        startAutoReconnect()
+    }
+
+    private fun startAutoReconnect() {
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            while (true) {
+                delay(60_000L)
+                val hasDisconnected = _relayStatus.value.any { (_, status) ->
+                    status is RelayStatus.Disconnected || status is RelayStatus.Error
+                }
+                if (hasDisconnected) {
+                    reconnect()
+                }
+            }
+        }
     }
 
     /**
@@ -174,6 +198,28 @@ class NostrClient @Inject constructor() {
     }
 
     /**
+     * Subscribe with a raw JSON filter (e.g., for NIP-50 search filters).
+     * Optionally target specific relays instead of all connected ones.
+     */
+    fun subscribeRaw(subscriptionId: String, filterJson: JSONObject, relayUrls: List<String>? = null) {
+        val message = JSONArray().apply {
+            put("REQ")
+            put(subscriptionId)
+            put(filterJson)
+        }.toString()
+
+        val targets = if (relayUrls != null) {
+            relayUrls.mapNotNull { relayConnections[normalizeRelayUrl(it)] }
+        } else {
+            relayConnections.values.toList()
+        }
+
+        targets.forEach { connection ->
+            connection.webSocket.send(message)
+        }
+    }
+
+    /**
      * Close a subscription
      */
     fun unsubscribe(subscriptionId: String) {
@@ -248,7 +294,7 @@ class NostrClient @Inject constructor() {
                     }
                     "EOSE" -> {
                         val subscriptionId = json.getString(1)
-                        // End of stored events - could emit a signal if needed
+                        _eoseEvents.emit(subscriptionId)
                     }
                     "OK" -> {
                         val eventId = json.getString(1)

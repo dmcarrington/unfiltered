@@ -16,13 +16,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import rust.nostr.protocol.Event
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Search service using NIP-50 WebSocket search to relay.nostr.band
- * for reliable user search.
+ * Service for fetching user posts and metadata from Nostr relays.
  */
 @Singleton
 class SearchService @Inject constructor(
@@ -35,136 +33,6 @@ class SearchService @Inject constructor(
         .writeTimeout(10, TimeUnit.SECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
-
-    private val searchRelays = listOf(
-        "wss://relay.nostr.band",
-        "wss://search.nos.today"
-    )
-
-    /**
-     * Search for users by name using NIP-50 search filter via WebSocket
-     */
-    suspend fun searchUsers(query: String): List<UserMetadata> = withContext(Dispatchers.IO) {
-        val results = mutableMapOf<String, UserMetadata>()
-
-        // Try each search relay
-        for (relayUrl in searchRelays) {
-            try {
-                val relayResults = searchViaRelay(relayUrl, query)
-                relayResults.forEach { metadata ->
-                    // Keep the first result for each pubkey (or update if better)
-                    if (!results.containsKey(metadata.pubkey)) {
-                        results[metadata.pubkey] = metadata
-                    }
-                }
-
-                // If we got results, no need to try more relays
-                if (results.isNotEmpty()) break
-            } catch (e: Exception) {
-                // Try next relay
-                continue
-            }
-        }
-
-        results.values.toList().sortedBy { it.bestName?.lowercase() ?: "zzz" }
-    }
-
-    private suspend fun searchViaRelay(relayUrl: String, query: String): List<UserMetadata> {
-        val results = mutableListOf<UserMetadata>()
-        val completed = CompletableDeferred<Unit>()
-        val isConnected = AtomicBoolean(false)
-
-        val subscriptionId = "search_${System.currentTimeMillis()}"
-
-        // Build NIP-50 search filter
-        val filterJson = JSONObject().apply {
-            put("kinds", JSONArray().put(0))
-            put("search", query)
-            put("limit", 30)
-        }
-
-        val reqMessage = JSONArray().apply {
-            put("REQ")
-            put(subscriptionId)
-            put(filterJson)
-        }.toString()
-
-        val request = Request.Builder()
-            .url(relayUrl)
-            .build()
-
-        var webSocket: WebSocket? = null
-
-        val listener = object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
-                isConnected.set(true)
-                ws.send(reqMessage)
-            }
-
-            override fun onMessage(ws: WebSocket, text: String) {
-                try {
-                    val json = JSONArray(text)
-                    when (json.getString(0)) {
-                        "EVENT" -> {
-                            val eventJson = json.getJSONObject(2).toString()
-                            val event = Event.fromJson(eventJson)
-                            val pubkey = event.author().toHex()
-                            val metadata = UserMetadata.fromJson(
-                                pubkey = pubkey,
-                                json = event.content(),
-                                createdAt = event.createdAt().asSecs().toLong()
-                            )
-                            // Cache the metadata for later use
-                            metadataCache.put(metadata)
-                            synchronized(results) {
-                                results.add(metadata)
-                            }
-                        }
-                        "EOSE" -> {
-                            // End of stored events - search complete
-                            completed.complete(Unit)
-                        }
-                        "CLOSED" -> {
-                            // Subscription closed
-                            completed.complete(Unit)
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Parse error, ignore
-                }
-            }
-
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                completed.complete(Unit)
-            }
-
-            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
-                ws.close(1000, null)
-                completed.complete(Unit)
-            }
-        }
-
-        webSocket = client.newWebSocket(request, listener)
-
-        // Wait for results with timeout
-        withTimeoutOrNull(5000) {
-            completed.await()
-        }
-
-        // Close subscription and connection
-        try {
-            val closeMessage = JSONArray().apply {
-                put("CLOSE")
-                put(subscriptionId)
-            }.toString()
-            webSocket.send(closeMessage)
-            webSocket.close(1000, "Search complete")
-        } catch (e: Exception) {
-            // Ignore close errors
-        }
-
-        return results
-    }
 
     /**
      * Fetch posts by a specific user (kind 1 and kind 20)
