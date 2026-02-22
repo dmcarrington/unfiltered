@@ -2,8 +2,8 @@ package com.nostr.unfiltered.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
-import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -12,8 +12,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import rust.nostr.protocol.Filter
 import rust.nostr.protocol.Kind
 import rust.nostr.protocol.Nip19Profile
@@ -23,7 +27,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val nostrClient: NostrClient,
-    private val searchService: SearchService,
+    private val metadataCache: MetadataCache,
     private val feedRepository: FeedRepository
 ) : ViewModel() {
 
@@ -32,39 +36,43 @@ class SearchViewModel @Inject constructor(
 
     private var searchJob: Job? = null
 
+    companion object {
+        private const val SEARCH_NAME_SUB = "search_name"
+        private const val SEARCH_DIRECT_PREFIX = "search_direct_"
+        private const val SEARCH_RELAY = "wss://relay.nostr.band"
+    }
+
     init {
-        observeDirectLookups()
+        observeSearchResults()
     }
 
     /**
-     * Observe events for direct pubkey lookups (npub/nprofile/hex)
+     * Observe events for both direct pubkey lookups and name searches
      */
-    private fun observeDirectLookups() {
+    private fun observeSearchResults() {
         viewModelScope.launch {
             nostrClient.events.collect { nostrEvent ->
                 val event = nostrEvent.event
                 val kind = event.kind().asU16().toInt()
+                if (kind != 0) return@collect
 
-                // Only process events from direct lookup subscriptions
-                if (kind == 0 && nostrEvent.subscriptionId.startsWith("search_direct_")) {
-                    val pubkey = event.author().toHex()
-                    val metadata = UserMetadata.fromJson(
-                        pubkey = pubkey,
-                        json = event.content(),
-                        createdAt = event.createdAt().asSecs().toLong()
-                    )
+                val subId = nostrEvent.subscriptionId
+                if (!subId.startsWith(SEARCH_DIRECT_PREFIX) && subId != SEARCH_NAME_SUB) return@collect
 
-                    _uiState.update { state ->
-                        // Add to results if not already present
-                        val existingPubkeys = state.results.map { it.pubkey }.toSet()
-                        if (pubkey !in existingPubkeys) {
-                            state.copy(
-                                results = state.results + metadata,
-                                isSearching = false
-                            )
-                        } else {
-                            state.copy(isSearching = false)
-                        }
+                val pubkey = event.author().toHex()
+                val metadata = UserMetadata.fromJson(
+                    pubkey = pubkey,
+                    json = event.content(),
+                    createdAt = event.createdAt().asSecs().toLong()
+                )
+                metadataCache.put(metadata)
+
+                _uiState.update { state ->
+                    val existingPubkeys = state.results.map { it.pubkey }.toSet()
+                    if (pubkey !in existingPubkeys) {
+                        state.copy(results = state.results + metadata)
+                    } else {
+                        state
                     }
                 }
             }
@@ -76,6 +84,7 @@ class SearchViewModel @Inject constructor(
 
         // Cancel previous search
         searchJob?.cancel()
+        nostrClient.unsubscribe(SEARCH_NAME_SUB)
 
         if (query.isBlank()) {
             _uiState.update { it.copy(results = emptyList(), isSearching = false) }
@@ -88,6 +97,9 @@ class SearchViewModel @Inject constructor(
 
             _uiState.update { it.copy(isSearching = true, results = emptyList()) }
 
+            // Ensure we're connected
+            nostrClient.reconnect()
+
             // Check if query is an npub or nprofile
             val directPubkey = tryParseNostrIdentifier(query)
             if (directPubkey != null) {
@@ -96,7 +108,7 @@ class SearchViewModel @Inject constructor(
                 return@launch
             }
 
-            // Search by name using nostr.band HTTP API
+            // Search by name using NIP-50 via existing NostrClient connection
             searchByName(query)
         }
     }
@@ -142,7 +154,7 @@ class SearchViewModel @Inject constructor(
                 .author(pk)
                 .limit(1u)
 
-            nostrClient.subscribe("search_direct_$pubkey", listOf(filter))
+            nostrClient.subscribe("$SEARCH_DIRECT_PREFIX$pubkey", listOf(filter))
 
             // Timeout for direct lookup
             viewModelScope.launch {
@@ -154,19 +166,24 @@ class SearchViewModel @Inject constructor(
         }
     }
 
-    private suspend fun searchByName(query: String) {
-        try {
-            val results = searchService.searchUsers(query)
-            _uiState.update {
-                it.copy(
-                    results = results,
-                    isSearching = false
-                )
+    private fun searchByName(query: String) {
+        val filterJson = JSONObject().apply {
+            put("kinds", JSONArray().put(0))
+            put("search", query)
+            put("limit", 30)
+        }
+
+        nostrClient.subscribeRaw(SEARCH_NAME_SUB, filterJson, listOf(SEARCH_RELAY))
+
+        // Wait for EOSE or timeout, then finalize results
+        viewModelScope.launch {
+            withTimeoutOrNull(5000) {
+                nostrClient.eoseEvents.first { it == SEARCH_NAME_SUB }
             }
-        } catch (e: Exception) {
-            _uiState.update {
-                it.copy(
-                    results = emptyList(),
+            nostrClient.unsubscribe(SEARCH_NAME_SUB)
+            _uiState.update { state ->
+                state.copy(
+                    results = state.results.sortedBy { it.bestName?.lowercase() ?: "zzz" },
                     isSearching = false
                 )
             }
@@ -175,9 +192,9 @@ class SearchViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // Clean up any direct lookup subscriptions
+        nostrClient.unsubscribe(SEARCH_NAME_SUB)
         _uiState.value.results.forEach { user ->
-            nostrClient.unsubscribe("search_direct_${user.pubkey}")
+            nostrClient.unsubscribe("$SEARCH_DIRECT_PREFIX${user.pubkey}")
         }
     }
 }
