@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.6] - 2026-02-22
+
+### Improvements
+
+- **User Search**: Replaced the nostr.band HTTP API search with NIP-50 relay-based search, providing more reliable user discovery directly through the Nostr protocol.
+
+- **Auto-Reconnect**: Added automatic relay reconnection every 60 seconds when disconnected relays are detected, improving connection stability during extended use.
+
+### Under the Hood
+
+- **EOSE Support**: The Nostr client now emits end-of-stored-events (EOSE) signals, enabling search to know when results are complete.
+
+- **Raw Filter Subscriptions**: Added support for raw JSON filter subscriptions (e.g., NIP-50 search filters) with optional relay targeting.
+
 ## [1.0.5] - 2026-02-14
 
 ### New Features
