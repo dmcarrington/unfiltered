@@ -56,6 +56,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +67,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.nostr.unfiltered.viewmodel.AmberSigningStep
 import com.nostr.unfiltered.viewmodel.CreatePostViewModel
+import com.nostr.unfiltered.viewmodel.CreatePostUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -210,7 +213,10 @@ fun CreatePostScreen(
                         model = uiState.selectedImageUri,
                         contentDescription = if (uiState.isVideo) "Selected video" else "Selected image",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        contentScale = ContentScale.Crop,
+                        colorFilter = if (!uiState.isVideo && uiState.selectedFilter != ImageFilter.NONE) {
+                            ColorFilter.colorMatrix(ColorMatrix(uiState.selectedFilter.colorMatrix.array))
+                        } else null
                     )
 
                     // Video indicator overlay
@@ -298,6 +304,16 @@ fun CreatePostScreen(
                         }
                     }
                 }
+            }
+
+            // Filter selector (photos only)
+            if (uiState.selectedImageUri != null && !uiState.isVideo) {
+                Spacer(modifier = Modifier.height(12.dp))
+                FilterSelector(
+                    imageUri = uiState.selectedImageUri!!,
+                    selectedFilter = uiState.selectedFilter,
+                    onFilterSelected = { viewModel.setFilter(it) }
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
