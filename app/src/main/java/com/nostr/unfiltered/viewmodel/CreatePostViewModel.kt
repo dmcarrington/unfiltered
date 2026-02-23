@@ -2,14 +2,18 @@ package com.nostr.unfiltered.viewmodel
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.BlossomClient
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
+import com.nostr.unfiltered.ui.screens.createpost.ImageFilter
+import com.nostr.unfiltered.ui.screens.createpost.applyFilter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,26 +65,38 @@ class CreatePostViewModel @Inject constructor(
         _uiState.update { it.copy(altText = altText) }
     }
 
+    fun setFilter(filter: ImageFilter) {
+        _uiState.update { it.copy(selectedFilter = filter) }
+    }
+
     fun createPost(context: Context) {
         val imageUri = _uiState.value.selectedImageUri ?: return
         val isVideo = _uiState.value.isVideo
+        val selectedFilter = _uiState.value.selectedFilter
 
         _uiState.update { it.copy(isUploading = true, error = null) }
 
         viewModelScope.launch {
             try {
+                // Apply filter to image if needed (photos only)
+                val uploadUri = if (!isVideo && selectedFilter != ImageFilter.NONE) {
+                    applyFilterToUri(context, imageUri, selectedFilter)
+                } else {
+                    imageUri
+                }
+
                 // Get media dimensions
                 val dimensions = if (isVideo) {
-                    getVideoDimensions(context, imageUri)
+                    getVideoDimensions(context, uploadUri)
                 } else {
-                    getImageDimensions(context, imageUri)
+                    getImageDimensions(context, uploadUri)
                 }
                 pendingDimensions = dimensions
                 pendingContext = context
 
                 if (keyManager.isAmberConnected()) {
                     // Amber flow: prepare upload and request auth signing
-                    val prepareResult = blossomClient.prepareUpload(context, imageUri)
+                    val prepareResult = blossomClient.prepareUpload(context, uploadUri)
                     prepareResult.fold(
                         onSuccess = { prepared ->
                             pendingPreparedUpload = prepared
@@ -107,7 +123,7 @@ class CreatePostViewModel @Inject constructor(
                     )
                 } else {
                     // Local keys flow: existing behavior
-                    val uploadResult = blossomClient.uploadImage(context, imageUri)
+                    val uploadResult = blossomClient.uploadImage(context, uploadUri)
 
                     uploadResult.fold(
                         onSuccess = { result ->
@@ -536,6 +552,27 @@ class CreatePostViewModel @Inject constructor(
         nostrClient.publish(kind1Event)
     }
 
+    private fun applyFilterToUri(context: Context, uri: Uri, filter: ImageFilter): Uri {
+        val inputStream = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Cannot open image")
+        val originalBitmap = BitmapFactory.decodeStream(inputStream)
+        inputStream.close()
+
+        val filteredBitmap = applyFilter(originalBitmap, filter)
+
+        val tempFile = java.io.File(context.cacheDir, "filtered_${System.currentTimeMillis()}.jpg")
+        tempFile.outputStream().use { out ->
+            filteredBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+        }
+
+        if (filteredBitmap !== originalBitmap) {
+            filteredBitmap.recycle()
+        }
+        originalBitmap.recycle()
+
+        return tempFile.toUri()
+    }
+
     private fun getImageDimensions(context: Context, uri: Uri): Pair<Int, Int>? {
         return try {
             val options = BitmapFactory.Options().apply {
@@ -588,6 +625,7 @@ data class CreatePostUiState(
     val isVideo: Boolean = false,
     val caption: String = "",
     val altText: String = "",
+    val selectedFilter: ImageFilter = ImageFilter.NONE,
     val isUploading: Boolean = false,
     val isSuccess: Boolean = false,
     val error: String? = null,
