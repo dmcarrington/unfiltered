@@ -7,7 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,8 +22,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
@@ -55,9 +52,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,7 +71,7 @@ import com.nostr.unfiltered.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.nostr.unfiltered.nostr.models.MediaItem
+import com.nostr.unfiltered.ui.components.FullscreenImageDialog
 import com.nostr.unfiltered.ui.components.PhotoCard
 import com.nostr.unfiltered.ui.components.UserAvatar
 import com.nostr.unfiltered.viewmodel.FeedMode
@@ -189,8 +183,7 @@ fun FeedScreen(
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     // Fullscreen image viewer state
-    var selectedMediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var selectedMediaIndex by remember { mutableStateOf(0) }
+    var selectedPostIndex by remember { mutableStateOf(-1) }
 
     // Coroutine scope for scroll animations
     val coroutineScope = rememberCoroutineScope()
@@ -360,24 +353,14 @@ fun FeedScreen(
                             items = uiState.posts,
                             key = { it.id }
                         ) { post ->
+                            val postIndex = uiState.posts.indexOf(post)
                             PhotoCard(
                                 post = post,
                                 onProfileClick = { onProfileClick(post.authorPubkey) },
                                 onLikeClick = { viewModel.likePost(post) },
                                 onZapClick = { viewModel.initiateZap(post) },
-                                onMediaClick = { index, _ ->
-                                    // Use the post's media items if available, otherwise create a single-item list
-                                    selectedMediaItems = if (post.mediaItems.isNotEmpty()) {
-                                        post.mediaItems
-                                    } else {
-                                        listOf(MediaItem(
-                                            url = post.imageUrl,
-                                            dimensions = post.dimensions,
-                                            altText = post.altText,
-                                            isVideo = post.isVideo
-                                        ))
-                                    }
-                                    selectedMediaIndex = index
+                                onMediaClick = { _, _ ->
+                                    selectedPostIndex = postIndex
                                 },
                                 showZapButton = uiState.canZap && !post.authorLud16.isNullOrEmpty()
                             )
@@ -445,11 +428,11 @@ fun FeedScreen(
     }
 
     // Fullscreen Image Viewer Dialog
-    if (selectedMediaItems.isNotEmpty()) {
+    if (selectedPostIndex >= 0) {
         FullscreenImageDialog(
-            mediaItems = selectedMediaItems,
-            initialIndex = selectedMediaIndex,
-            onDismiss = { selectedMediaItems = emptyList() }
+            posts = uiState.posts,
+            initialIndex = selectedPostIndex,
+            onDismiss = { selectedPostIndex = -1 }
         )
     }
 }
@@ -627,95 +610,3 @@ private fun EmptyFeedState(feedMode: FeedMode = FeedMode.TRENDING) {
     }
 }
 
-@Composable
-private fun FullscreenImageDialog(
-    mediaItems: List<MediaItem>,
-    initialIndex: Int,
-    onDismiss: () -> Unit
-) {
-    val pagerState = rememberPagerState(
-        initialPage = initialIndex.coerceIn(0, (mediaItems.size - 1).coerceAtLeast(0)),
-        pageCount = { mediaItems.size }
-    )
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.95f))
-        ) {
-            // Swipeable image pager
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
-                val item = mediaItems[page]
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onDismiss
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AsyncImage(
-                        model = item.url,
-                        contentDescription = item.altText ?: "Image ${page + 1}",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        contentScale = ContentScale.Fit
-                    )
-                }
-            }
-
-            // Page indicator (only show if multiple images)
-            if (mediaItems.size > 1) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 32.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    repeat(mediaItems.size) { index ->
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(
-                                    color = if (pagerState.currentPage == index)
-                                        Color.White
-                                    else
-                                        Color.White.copy(alpha = 0.5f),
-                                    shape = CircleShape
-                                )
-                        )
-                    }
-                }
-
-                // Page counter text
-                Text(
-                    text = "${pagerState.currentPage + 1} / ${mediaItems.size}",
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 48.dp)
-                        .background(
-                            color = Color.Black.copy(alpha = 0.5f),
-                            shape = CircleShape
-                        )
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                )
-            }
-        }
-    }
-}
