@@ -92,6 +92,22 @@ fun SearchScreen(
             )
 
             when {
+                uiState.results.isNotEmpty() -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        items(
+                            items = uiState.results,
+                            key = { it.pubkey }
+                        ) { user ->
+                            UserListItem(
+                                user = user,
+                                onClick = { onUserClick(user.pubkey) }
+                            )
+                        }
+                    }
+                }
+
                 uiState.isSearching -> {
                     Box(
                         modifier = Modifier
@@ -133,7 +149,7 @@ fun SearchScreen(
                     }
                 }
 
-                uiState.results.isEmpty() -> {
+                else -> {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -145,22 +161,6 @@ fun SearchScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.secondary
                         )
-                    }
-                }
-
-                else -> {
-                    LazyColumn(
-                        contentPadding = PaddingValues(vertical = 8.dp)
-                    ) {
-                        items(
-                            items = uiState.results,
-                            key = { it.pubkey }
-                        ) { user ->
-                            UserListItem(
-                                user = user,
-                                onClick = { onUserClick(user.pubkey) }
-                            )
-                        }
                     }
                 }
             }
