@@ -6,16 +6,15 @@ import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
+import android.util.Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import rust.nostr.protocol.Filter
@@ -39,16 +38,19 @@ class SearchViewModel @Inject constructor(
     companion object {
         private const val SEARCH_NAME_SUB = "search_name"
         private const val SEARCH_DIRECT_PREFIX = "search_direct_"
-        private const val SEARCH_RELAY = "wss://relay.nostr.band"
+        private const val SEARCH_RELAY = "wss://search.nos.today"
     }
 
     init {
         observeSearchResults()
+        // Log all state changes
+        viewModelScope.launch {
+            _uiState.collect { state ->
+                Log.d("Search", "STATE: isSearching=${state.isSearching} results=${state.results.size} query='${state.searchQuery}'")
+            }
+        }
     }
 
-    /**
-     * Observe events for both direct pubkey lookups and name searches
-     */
     private fun observeSearchResults() {
         viewModelScope.launch {
             nostrClient.events.collect { nostrEvent ->
@@ -91,11 +93,14 @@ class SearchViewModel @Inject constructor(
             return
         }
 
+        // Show spinner immediately so the UI never flashes "no users found" during debounce
+        _uiState.update { it.copy(isSearching = true) }
+
         searchJob = viewModelScope.launch {
             // Debounce
             delay(300)
 
-            _uiState.update { it.copy(isSearching = true, results = emptyList()) }
+            _uiState.update { it.copy(results = emptyList()) }
 
             // Ensure we're connected
             nostrClient.reconnect()
@@ -103,12 +108,11 @@ class SearchViewModel @Inject constructor(
             // Check if query is an npub or nprofile
             val directPubkey = tryParseNostrIdentifier(query)
             if (directPubkey != null) {
-                // Direct lookup via Nostr relay
                 fetchUserMetadata(directPubkey)
                 return@launch
             }
 
-            // Search by name using NIP-50 via existing NostrClient connection
+            // Search by name using NIP-50
             searchByName(query)
         }
     }
@@ -116,7 +120,6 @@ class SearchViewModel @Inject constructor(
     private fun tryParseNostrIdentifier(query: String): String? {
         val trimmed = query.trim()
 
-        // Try npub
         if (trimmed.startsWith("npub1")) {
             return try {
                 PublicKey.fromBech32(trimmed).toHex()
@@ -125,7 +128,6 @@ class SearchViewModel @Inject constructor(
             }
         }
 
-        // Try nprofile
         if (trimmed.startsWith("nprofile1")) {
             return try {
                 Nip19Profile.fromBech32(trimmed).publicKey().toHex()
@@ -134,7 +136,6 @@ class SearchViewModel @Inject constructor(
             }
         }
 
-        // Try hex pubkey
         if (trimmed.length == 64 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
             return try {
                 PublicKey.fromHex(trimmed).toHex()
@@ -156,7 +157,6 @@ class SearchViewModel @Inject constructor(
 
             nostrClient.subscribe("$SEARCH_DIRECT_PREFIX$pubkey", listOf(filter))
 
-            // Timeout for direct lookup
             viewModelScope.launch {
                 delay(3000)
                 _uiState.update { it.copy(isSearching = false) }
@@ -166,7 +166,16 @@ class SearchViewModel @Inject constructor(
         }
     }
 
-    private fun searchByName(query: String) {
+    private suspend fun searchByName(query: String) {
+        Log.d("Search", "searchByName: connecting to relay...")
+        // Ensure search relay is connected before sending
+        if (!nostrClient.ensureRelayConnected(SEARCH_RELAY, timeoutMs = 10000)) {
+            Log.w("Search", "searchByName: relay connect FAILED")
+            _uiState.update { it.copy(isSearching = false) }
+            return
+        }
+        Log.d("Search", "searchByName: relay connected, sending search")
+
         val filterJson = JSONObject().apply {
             put("kinds", JSONArray().put(0))
             put("search", query)
@@ -174,19 +183,23 @@ class SearchViewModel @Inject constructor(
         }
 
         nostrClient.subscribeRaw(SEARCH_NAME_SUB, filterJson, listOf(SEARCH_RELAY))
+        Log.d("Search", "searchByName: subscribeRaw sent, waiting for results...")
 
-        // Wait for EOSE or timeout, then finalize results
-        viewModelScope.launch {
-            withTimeoutOrNull(5000) {
-                nostrClient.eoseEvents.first { it == SEARCH_NAME_SUB }
-            }
-            nostrClient.unsubscribe(SEARCH_NAME_SUB)
-            _uiState.update { state ->
-                state.copy(
-                    results = state.results.sortedBy { it.bestName?.lowercase() ?: "zzz" },
-                    isSearching = false
-                )
-            }
+        // Wait for results to arrive. The relay can take 20+ seconds to respond.
+        // Keep the subscription open and poll until results arrive or timeout.
+        val deadline = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < deadline) {
+            delay(500)
+            if (_uiState.value.results.isNotEmpty()) break
+        }
+
+        Log.d("Search", "searchByName: done waiting, results=${_uiState.value.results.size}")
+        nostrClient.unsubscribe(SEARCH_NAME_SUB)
+        _uiState.update { state ->
+            state.copy(
+                results = state.results.sortedBy { it.bestName?.lowercase() ?: "zzz" },
+                isSearching = false
+            )
         }
     }
 

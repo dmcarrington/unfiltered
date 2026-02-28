@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Verified
@@ -38,6 +40,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.nostr.unfiltered.ui.components.FullscreenImageDialog
 import com.nostr.unfiltered.ui.components.UserAvatar
 import com.nostr.unfiltered.viewmodel.ProfileViewModel
 
@@ -59,6 +65,7 @@ fun ProfileScreen(
     viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    var selectedPostIndex by remember { mutableIntStateOf(-1) }
 
     // Amber signing launcher for follow/unfollow
     val amberLauncher = rememberLauncherForActivityResult(
@@ -164,19 +171,31 @@ fun ProfileScreen(
                         contentPadding = PaddingValues(2.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        items(uiState.posts) { post ->
+                        itemsIndexed(uiState.posts) { index, post ->
                             AsyncImage(
                                 model = post.imageUrl,
                                 contentDescription = post.caption,
                                 modifier = Modifier
                                     .aspectRatio(1f)
-                                    .padding(2.dp),
+                                    .padding(2.dp)
+                                    .clickable {
+                                        selectedPostIndex = index
+                                    },
                                 contentScale = ContentScale.Crop
                             )
                         }
                     }
                 }
             }
+        }
+
+        // Fullscreen Image Viewer Dialog
+        if (selectedPostIndex >= 0) {
+            FullscreenImageDialog(
+                posts = uiState.posts,
+                initialIndex = selectedPostIndex,
+                onDismiss = { selectedPostIndex = -1 }
+            )
         }
     }
 }

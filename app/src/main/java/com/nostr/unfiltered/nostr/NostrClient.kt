@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,7 +12,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -59,6 +62,19 @@ class NostrClient @Inject constructor() {
 
     private var reconnectJob: Job? = null
 
+    // Sequential message processing to preserve EVENT/EOSE ordering
+    private data class RelayMessage(val relayUrl: String, val text: String)
+    private val messageChannel = Channel<RelayMessage>(Channel.UNLIMITED)
+
+    init {
+        // Process messages sequentially to guarantee EVENTs are emitted before their EOSE
+        scope.launch {
+            for (msg in messageChannel) {
+                processMessage(msg.relayUrl, msg.text)
+            }
+        }
+    }
+
     // Relay status map
     private val _relayStatus = MutableStateFlow<Map<String, RelayStatus>>(emptyMap())
     val relayStatus: StateFlow<Map<String, RelayStatus>> = _relayStatus.asStateFlow()
@@ -66,8 +82,7 @@ class NostrClient @Inject constructor() {
     val defaultRelays = listOf(
         "wss://relay.damus.io",
         "wss://relay.primal.net",
-        "wss://nos.lol",
-        "wss://relay.nostr.band"
+        "wss://nos.lol"
     )
 
     /**
@@ -258,6 +273,30 @@ class NostrClient @Inject constructor() {
     }
 
     /**
+     * Ensure a specific relay is connected, waiting up to [timeoutMs] for it to reach Connected status.
+     * Returns true if the relay is connected within the timeout.
+     */
+    suspend fun ensureRelayConnected(relayUrl: String, timeoutMs: Long = 5000): Boolean {
+        val normalizedUrl = normalizeRelayUrl(relayUrl)
+
+        // Already connected
+        if (_relayStatus.value[normalizedUrl] == RelayStatus.Connected) return true
+
+        // Start connecting if not already
+        if (!relayConnections.containsKey(normalizedUrl)) {
+            connectToRelay(normalizedUrl)
+        }
+
+        // Wait for Connected status
+        return withTimeoutOrNull(timeoutMs) {
+            _relayStatus.first { statuses ->
+                statuses[normalizedUrl] == RelayStatus.Connected
+            }
+            true
+        } ?: false
+    }
+
+    /**
      * Get list of currently connected relay URLs
      */
     fun getConnectedRelays(): List<String> {
@@ -282,39 +321,41 @@ class NostrClient @Inject constructor() {
     }
 
     private fun handleMessage(relayUrl: String, message: String) {
-        scope.launch {
-            try {
-                val json = JSONArray(message)
-                when (json.getString(0)) {
-                    "EVENT" -> {
-                        val subscriptionId = json.getString(1)
-                        val eventJson = json.getJSONObject(2).toString()
-                        val event = Event.fromJson(eventJson)
-                        _events.emit(NostrEvent(event, relayUrl, subscriptionId))
-                    }
-                    "EOSE" -> {
-                        val subscriptionId = json.getString(1)
-                        _eoseEvents.emit(subscriptionId)
-                    }
-                    "OK" -> {
-                        val eventId = json.getString(1)
-                        val accepted = json.getBoolean(2)
-                        val message = if (json.length() > 3) json.getString(3) else ""
-                        // Event publish confirmation - could emit a signal if needed
-                    }
-                    "NOTICE" -> {
-                        val notice = json.getString(1)
-                        // Relay notice - could log or display
-                    }
-                    "CLOSED" -> {
-                        val subscriptionId = json.getString(1)
-                        val reason = if (json.length() > 2) json.getString(2) else ""
-                        // Subscription closed by relay
-                    }
+        messageChannel.trySend(RelayMessage(relayUrl, message))
+    }
+
+    private suspend fun processMessage(relayUrl: String, message: String) {
+        try {
+            val json = JSONArray(message)
+            when (json.getString(0)) {
+                "EVENT" -> {
+                    val subscriptionId = json.getString(1)
+                    val eventJson = json.getJSONObject(2).toString()
+                    val event = Event.fromJson(eventJson)
+                    _events.emit(NostrEvent(event, relayUrl, subscriptionId))
                 }
-            } catch (e: Exception) {
-                // Log parsing error
+                "EOSE" -> {
+                    val subscriptionId = json.getString(1)
+                    _eoseEvents.emit(subscriptionId)
+                }
+                "OK" -> {
+                    val eventId = json.getString(1)
+                    val accepted = json.getBoolean(2)
+                    val msg = if (json.length() > 3) json.getString(3) else ""
+                    // Event publish confirmation
+                }
+                "NOTICE" -> {
+                    val notice = json.getString(1)
+                    // Relay notice
+                }
+                "CLOSED" -> {
+                    val subscriptionId = json.getString(1)
+                    val reason = if (json.length() > 2) json.getString(2) else ""
+                    // Subscription closed by relay
+                }
             }
+        } catch (e: Exception) {
+            // Parsing error
         }
     }
 
