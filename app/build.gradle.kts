@@ -25,11 +25,14 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = (findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-        versionName = (findProperty("versionName") as String?) ?: "1.0.7"
+        versionName = (findProperty("versionName") as String?) ?: "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+        ndk {
+            abiFilters += "arm64-v8a"
         }
     }
 

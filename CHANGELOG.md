@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.8] - 2026-02-28
+
+### Bug Fixes
+- **Build Architecture**: Fix architecture detection for Zapstore
+
 ## [1.0.7] - 2026-02-28
 
 ### New Features
