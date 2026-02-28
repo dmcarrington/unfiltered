@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.7] - 2026-02-28
+
+### New Features
+
+- **Image Filters**: Added image filters that can be applied to photos before posting.
+
+- **Profile Image Viewer**: View images fullscreen directly from a user's profile page.
+
+### Improvements
+
+- **User Search**: Further improvements to user search reliability. Removed relay.nostr.band dependency.
+
+### Bug Fixes
+
+- **App Icon**: Fixed the app icon.
+
+### Under the Hood
+
+- **Release Pipeline**: Added GitHub Actions release workflow for automated builds.
+
 ## [1.0.6] - 2026-02-22
 
 ### Improvements
