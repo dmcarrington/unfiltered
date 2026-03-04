@@ -103,7 +103,10 @@ fun UnfilteredNavGraph(
 
         composable(Screen.Notifications.route) {
             NotificationsScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onProfileClick = { pubkey ->
+                    navController.navigate(Screen.Profile.createRoute(pubkey))
+                }
             )
         }
 
