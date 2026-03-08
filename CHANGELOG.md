@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.9] - 2026-03-08
+
+### New Features
+- **Notification Actions**: Tapping a notiifcation directs to the relevant post or profile.
+
 ## [1.0.8] - 2026-02-28
 
 ### Bug Fixes
