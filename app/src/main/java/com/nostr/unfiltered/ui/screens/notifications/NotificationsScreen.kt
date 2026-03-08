@@ -69,6 +69,7 @@ data class PostPreviewData(
 @Composable
 fun NotificationsScreen(
     onBackClick: () -> Unit,
+    onProfileClick: (String) -> Unit,
     viewModel: NotificationsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -135,7 +136,8 @@ fun NotificationsScreen(
                 NotificationsList(
                     notifications = notifications,
                     viewModel = viewModel,
-                    onShowPreview = { selectedPreview = it }
+                    onShowPreview = { selectedPreview = it },
+                    onProfileClick = onProfileClick
                 )
             }
         }
@@ -146,7 +148,8 @@ fun NotificationsScreen(
 private fun NotificationsList(
     notifications: List<Notification>,
     viewModel: NotificationsViewModel,
-    onShowPreview: (PostPreviewData) -> Unit
+    onShowPreview: (PostPreviewData) -> Unit,
+    onProfileClick: (String) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize()
@@ -158,20 +161,26 @@ private fun NotificationsList(
             NotificationItem(
                 notification = notification,
                 onClick = {
-                    if (notification.type != NotificationType.ZAP && notification.type != NotificationType.FOLLOW) {
-                        val imageUrl = notification.targetPostImageUrl
-                            ?: viewModel.getPostImageUrl(notification.targetPostId)
-                        val content = notification.targetPostContent
-
-                        if (content != null || imageUrl != null) {
-                            onShowPreview(
-                                PostPreviewData(
-                                    imageUrl = imageUrl,
-                                    content = content,
-                                    authorName = notification.actorName
-                                )
-                            )
+                    when (notification.type) {
+                        NotificationType.FOLLOW -> {
+                            onProfileClick(notification.actorPubkey)
                         }
+                        NotificationType.REACTION, NotificationType.MENTION -> {
+                            val imageUrl = notification.targetPostImageUrl
+                                ?: viewModel.getPostImageUrl(notification.targetPostId)
+                            val content = notification.targetPostContent
+
+                            if (content != null || imageUrl != null) {
+                                onShowPreview(
+                                    PostPreviewData(
+                                        imageUrl = imageUrl,
+                                        content = content,
+                                        authorName = notification.actorName
+                                    )
+                                )
+                            }
+                        }
+                        NotificationType.ZAP -> { /* Not clickable */ }
                     }
                 }
             )
@@ -246,7 +255,7 @@ private fun NotificationItem(
     notification: Notification,
     onClick: () -> Unit
 ) {
-    val isClickable = notification.type != NotificationType.ZAP && notification.type != NotificationType.FOLLOW
+    val isClickable = notification.type != NotificationType.ZAP
 
     Row(
         modifier = Modifier
