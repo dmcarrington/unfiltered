@@ -122,7 +122,7 @@ class ProfileViewModel @Inject constructor(
                                     val existingIds = state.posts.map { it.id }.toSet()
                                     if (post.id !in existingIds) {
                                         state.copy(
-                                            posts = (state.posts + post).sortedByDescending { it.createdAt }
+                                            posts = deduplicatePosts(state.posts + post)
                                         )
                                     } else {
                                         state
@@ -166,7 +166,7 @@ class ProfileViewModel @Inject constructor(
                         )
                     }
                 } ?: cachedPosts
-                state.copy(posts = enrichedPosts)
+                state.copy(posts = deduplicatePosts(enrichedPosts))
             }
         }
 
@@ -190,7 +190,7 @@ class ProfileViewModel @Inject constructor(
                             } ?: post
                         }
                         state.copy(
-                            posts = (state.posts + enrichedPosts).sortedByDescending { it.createdAt },
+                            posts = deduplicatePosts(state.posts + enrichedPosts),
                             isLoading = false
                         )
                     }
@@ -214,7 +214,7 @@ class ProfileViewModel @Inject constructor(
                         val newPosts = authorPosts.filter { it.id !in existingIds }
                         if (newPosts.isNotEmpty()) {
                             state.copy(
-                                posts = (state.posts + newPosts).sortedByDescending { it.createdAt }
+                                posts = deduplicatePosts(state.posts + newPosts)
                             )
                         } else {
                             state
@@ -295,6 +295,16 @@ class ProfileViewModel @Inject constructor(
      */
     fun clearPendingFollowIntent() {
         feedRepository.clearPendingFollowIntent()
+    }
+
+    /**
+     * Deduplicate posts by imageUrl. When the same image appears in both a Kind 20
+     * and Kind 1 event (cross-client compatibility), keep only one.
+     */
+    private fun deduplicatePosts(posts: List<PhotoPost>): List<PhotoPost> {
+        return posts
+            .sortedByDescending { it.createdAt }
+            .distinctBy { it.imageUrl }
     }
 
     override fun onCleared() {
