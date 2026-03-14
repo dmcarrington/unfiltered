@@ -25,7 +25,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = (findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-        versionName = (findProperty("versionName") as String?) ?: "1.0.9"
+        versionName = (findProperty("versionName") as String?) ?: "1.0.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -138,6 +138,9 @@ dependencies {
     // Media3 ExoPlayer for video playback
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
+
+    // EXIF data handling
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.1.1")

@@ -6,6 +6,7 @@ import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.NwcService
 import com.nostr.unfiltered.nostr.SearchService
+import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import com.nostr.unfiltered.repository.MuteListRepository
@@ -109,6 +110,7 @@ class SettingsViewModel @Inject constructor(
         when (tab) {
             SettingsTab.FOLLOWING -> loadFollowingUsers()
             SettingsTab.MUTED -> loadMutedUsers()
+            SettingsTab.MY_POSTS -> loadMyPosts()
             SettingsTab.SETTINGS -> {}
         }
     }
@@ -155,6 +157,46 @@ class SettingsViewModel @Inject constructor(
             }
             _uiState.update { it.copy(isLoadingMuteList = false) }
         }
+    }
+
+    private fun loadMyPosts() {
+        if (_uiState.value.myPosts.isNotEmpty()) return
+        val pubkey = keyManager.getPublicKeyHex() ?: return
+        _uiState.update { it.copy(isLoadingMyPosts = true) }
+
+        viewModelScope.launch {
+            // Load cached posts first
+            val cachedPosts = feedRepository.getPostsByAuthor(pubkey)
+            if (cachedPosts.isNotEmpty()) {
+                _uiState.update { it.copy(myPosts = deduplicatePosts(cachedPosts)) }
+            }
+
+            // Fetch from relays
+            try {
+                val fetchedPosts = searchService.fetchUserPosts(pubkey)
+                if (fetchedPosts.isNotEmpty()) {
+                    _uiState.update { state ->
+                        val existingIds = state.myPosts.map { it.id }.toSet()
+                        val newPosts = fetchedPosts.filter { it.id !in existingIds }
+                        state.copy(
+                            myPosts = deduplicatePosts(state.myPosts + newPosts)
+                        )
+                    }
+                }
+            } catch (_: Exception) { }
+
+            _uiState.update { it.copy(isLoadingMyPosts = false) }
+        }
+    }
+
+    /**
+     * Deduplicate posts by imageUrl. When the same image appears in both a Kind 20
+     * and Kind 1 event (cross-client compatibility), keep only one.
+     */
+    private fun deduplicatePosts(posts: List<PhotoPost>): List<PhotoPost> {
+        return posts
+            .sortedByDescending { it.createdAt }
+            .distinctBy { it.imageUrl }
     }
 
     fun addRelay(url: String) {
@@ -233,7 +275,8 @@ class SettingsViewModel @Inject constructor(
 enum class SettingsTab {
     SETTINGS,
     FOLLOWING,
-    MUTED
+    MUTED,
+    MY_POSTS
 }
 
 data class SettingsUiState(
@@ -251,7 +294,9 @@ data class SettingsUiState(
     val followingUsers: List<UserMetadata> = emptyList(),
     val mutedUsers: List<UserMetadata> = emptyList(),
     val isLoadingFollowList: Boolean = false,
-    val isLoadingMuteList: Boolean = false
+    val isLoadingMuteList: Boolean = false,
+    val myPosts: List<PhotoPost> = emptyList(),
+    val isLoadingMyPosts: Boolean = false
 )
 
 data class RelayInfo(

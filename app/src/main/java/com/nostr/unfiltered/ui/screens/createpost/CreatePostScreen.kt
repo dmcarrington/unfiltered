@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -22,15 +23,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,10 +86,13 @@ fun CreatePostScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showCamera by remember { mutableStateOf(false) }
 
+    // Multi-select gallery picker
     val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        uri?.let { viewModel.setSelectedMedia(context, it) }
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.addMultipleMedia(context, uris)
+        }
     }
 
     // Camera permission launcher
@@ -142,7 +150,7 @@ fun CreatePostScreen(
     if (showCamera) {
         CameraCapture(
             onImageCaptured = { uri ->
-                viewModel.setSelectedMedia(context, uri)
+                viewModel.addMedia(context, uri)
                 showCamera = false
             },
             onClose = { showCamera = false }
@@ -163,7 +171,7 @@ fun CreatePostScreen(
                     }
                 },
                 actions = {
-                    if (uiState.selectedImageUri != null && !uiState.isUploading) {
+                    if (uiState.hasMedia && !uiState.isUploading) {
                         IconButton(onClick = { viewModel.createPost(context) }) {
                             Icon(
                                 imageVector = Icons.Default.Check,
@@ -183,82 +191,68 @@ fun CreatePostScreen(
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            // Image picker / preview
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(
-                        width = 2.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    .then(
-                        if (uiState.selectedImageUri != null && !uiState.isUploading) {
-                            Modifier.clickable {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            }
+            if (uiState.hasMedia) {
+                // Media strip showing selected images
+                MediaStrip(
+                    uiState = uiState,
+                    onRemove = { index -> viewModel.removeMedia(index) },
+                    onAddFromCamera = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                            == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            showCamera = true
                         } else {
-                            Modifier
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (uiState.selectedImageUri != null) {
-                    AsyncImage(
-                        model = uiState.selectedImageUri,
-                        contentDescription = if (uiState.isVideo) "Selected video" else "Selected image",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                        colorFilter = if (!uiState.isVideo && uiState.selectedFilter != ImageFilter.NONE) {
-                            ColorFilter.colorMatrix(ColorMatrix(uiState.selectedFilter.colorMatrix.array))
-                        } else null
+                    },
+                    onAddFromGallery = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    }
+                )
+
+                // Upload progress overlay
+                if (uiState.isUploading) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = uiState.uploadProgress.ifEmpty { "Uploading..." },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+
+                // Filter selector (when any non-video image is selected)
+                if (uiState.selectedMedia.any { !it.isVideo }) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    FilterSelector(
+                        imageUri = uiState.selectedMedia.first { !it.isVideo }.uri,
+                        selectedFilter = uiState.selectedFilter,
+                        onFilterSelected = { viewModel.setFilter(it) }
                     )
-
-                    // Video indicator overlay
-                    if (uiState.isVideo && !uiState.isUploading) {
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.6f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Video",
-                                modifier = Modifier.size(40.dp),
-                                tint = Color.White
-                            )
-                        }
-                    }
-
-                    if (uiState.isUploading) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                CircularProgressIndicator()
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Uploading...",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    // No image selected - show camera and gallery buttons
+                }
+            } else {
+                // No media selected - show initial picker
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(
+                            width = 2.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(12.dp)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
@@ -306,16 +300,6 @@ fun CreatePostScreen(
                 }
             }
 
-            // Filter selector (photos only)
-            if (uiState.selectedImageUri != null && !uiState.isVideo) {
-                Spacer(modifier = Modifier.height(12.dp))
-                FilterSelector(
-                    imageUri = uiState.selectedImageUri!!,
-                    selectedFilter = uiState.selectedFilter,
-                    onFilterSelected = { viewModel.setFilter(it) }
-                )
-            }
-
             Spacer(modifier = Modifier.height(16.dp))
 
             // Caption input
@@ -355,7 +339,7 @@ fun CreatePostScreen(
             Button(
                 onClick = { viewModel.createPost(context) },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = uiState.selectedImageUri != null && !uiState.isUploading
+                enabled = uiState.hasMedia && !uiState.isUploading
             ) {
                 if (uiState.isUploading) {
                     CircularProgressIndicator(
@@ -364,6 +348,130 @@ fun CreatePostScreen(
                     )
                 } else {
                     Text("Share Post")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MediaStrip(
+    uiState: CreatePostUiState,
+    onRemove: (Int) -> Unit,
+    onAddFromCamera: () -> Unit,
+    onAddFromGallery: () -> Unit
+) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(vertical = 4.dp)
+    ) {
+        itemsIndexed(uiState.selectedMedia) { index, item ->
+            Box(
+                modifier = Modifier
+                    .size(120.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+            ) {
+                AsyncImage(
+                    model = item.uri,
+                    contentDescription = "Image ${index + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    colorFilter = if (!item.isVideo && uiState.selectedFilter != ImageFilter.NONE) {
+                        ColorFilter.colorMatrix(ColorMatrix(uiState.selectedFilter.colorMatrix.array))
+                    } else null
+                )
+
+                // Video indicator
+                if (item.isVideo) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .align(Alignment.Center)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Video",
+                            modifier = Modifier.size(20.dp),
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                // Remove button
+                if (!uiState.isUploading) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f))
+                            .clickable { onRemove(index) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Remove",
+                            modifier = Modifier.size(16.dp),
+                            tint = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // Add more buttons
+        if (!uiState.isUploading) {
+            item {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 80.dp, height = 58.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(
+                                width = 2.dp,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onAddFromCamera() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Take photo",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(width = 80.dp, height = 58.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(
+                                width = 2.dp,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onAddFromGallery() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add from gallery",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
         }

@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -41,20 +43,48 @@ class CreatePostViewModel @Inject constructor(
     // Amber signing flow state
     private var pendingPreparedUpload: BlossomClient.PreparedUpload? = null
     private var pendingUploadResult: BlossomClient.UploadResult? = null
+    private var pendingUploadResults: List<UploadedMedia> = emptyList()
     private var pendingDimensions: Pair<Int, Int>? = null
     private var pendingContext: Context? = null
     private var pendingPostUnsignedEvent: String? = null
     private var pendingKind1UnsignedEvent: String? = null
 
-    fun setSelectedMedia(context: Context, uri: Uri) {
+    data class UploadedMedia(
+        val url: String,
+        val sha256: String,
+        val mimeType: String,
+        val dimensions: Pair<Int, Int>?,
+        val isVideo: Boolean
+    )
+
+    fun addMedia(context: Context, uri: Uri) {
         val mimeType = context.contentResolver.getType(uri) ?: ""
         val isVideo = mimeType.startsWith("video/")
-        _uiState.update { it.copy(selectedImageUri = uri, isVideo = isVideo, error = null) }
+        _uiState.update {
+            it.copy(
+                selectedMedia = it.selectedMedia + SelectedMediaItem(uri, isVideo),
+                error = null
+            )
+        }
     }
 
-    // Keep for backwards compatibility
-    fun setSelectedImage(uri: Uri) {
-        _uiState.update { it.copy(selectedImageUri = uri, isVideo = false, error = null) }
+    fun addMultipleMedia(context: Context, uris: List<Uri>) {
+        val items = uris.map { uri ->
+            val mimeType = context.contentResolver.getType(uri) ?: ""
+            SelectedMediaItem(uri, mimeType.startsWith("video/"))
+        }
+        _uiState.update {
+            it.copy(
+                selectedMedia = it.selectedMedia + items,
+                error = null
+            )
+        }
+    }
+
+    fun removeMedia(index: Int) {
+        _uiState.update {
+            it.copy(selectedMedia = it.selectedMedia.filterIndexed { i, _ -> i != index })
+        }
     }
 
     fun setCaption(caption: String) {
@@ -70,94 +100,102 @@ class CreatePostViewModel @Inject constructor(
     }
 
     fun createPost(context: Context) {
-        val imageUri = _uiState.value.selectedImageUri ?: return
-        val isVideo = _uiState.value.isVideo
+        val media = _uiState.value.selectedMedia
+        if (media.isEmpty()) return
         val selectedFilter = _uiState.value.selectedFilter
 
         _uiState.update { it.copy(isUploading = true, error = null) }
 
         viewModelScope.launch {
             try {
-                // Apply filter to image if needed (photos only)
-                val uploadUri = if (!isVideo && selectedFilter != ImageFilter.NONE) {
-                    applyFilterToUri(context, imageUri, selectedFilter)
-                } else {
-                    imageUri
-                }
-
-                // Get media dimensions
-                val dimensions = if (isVideo) {
-                    getVideoDimensions(context, uploadUri)
-                } else {
-                    getImageDimensions(context, uploadUri)
-                }
-                pendingDimensions = dimensions
-                pendingContext = context
-
                 if (keyManager.isAmberConnected()) {
-                    // Amber flow: prepare upload and request auth signing
-                    val prepareResult = blossomClient.prepareUpload(context, uploadUri)
-                    prepareResult.fold(
-                        onSuccess = { prepared ->
-                            pendingPreparedUpload = prepared
-                            val intent = keyManager.createAmberSignEventIntent(
-                                eventJson = prepared.unsignedAuthEvent,
-                                eventId = "blossom_auth"
-                            )
-                            _uiState.update {
-                                it.copy(
-                                    isUploading = false,
-                                    pendingAmberIntent = intent,
-                                    amberSigningStep = AmberSigningStep.AUTH
-                                )
-                            }
-                        },
-                        onFailure = { error ->
-                            _uiState.update {
-                                it.copy(
-                                    isUploading = false,
-                                    error = error.message ?: "Failed to prepare upload"
-                                )
-                            }
+                    // Amber flow: upload all images first, then sign event
+                    val uploadResults = mutableListOf<UploadedMedia>()
+                    for ((index, item) in media.withIndex()) {
+                        _uiState.update {
+                            it.copy(uploadProgress = "Uploading ${index + 1} of ${media.size}...")
                         }
-                    )
-                } else {
-                    // Local keys flow: existing behavior
-                    val uploadResult = blossomClient.uploadImage(context, uploadUri)
+                        val uploadUri = if (!item.isVideo) {
+                            prepareImageForUpload(context, item.uri, selectedFilter)
+                        } else {
+                            item.uri
+                        }
+                        val dimensions = if (item.isVideo) {
+                            getVideoDimensions(context, uploadUri)
+                        } else {
+                            getImageDimensions(context, uploadUri)
+                        }
 
-                    uploadResult.fold(
-                        onSuccess = { result ->
-                            publishPhotoPost(
-                                imageUrl = result.url,
+                        val prepareResult = blossomClient.prepareUpload(context, uploadUri)
+                        val prepared = prepareResult.getOrThrow()
+
+                        // For Amber, we need to sign each auth event - use first one to kick off flow
+                        // For simplicity with multiple images, we'll store all and sign sequentially
+                        pendingPreparedUpload = prepared
+                        pendingDimensions = dimensions
+                        pendingContext = context
+
+                        val intent = keyManager.createAmberSignEventIntent(
+                            eventJson = prepared.unsignedAuthEvent,
+                            eventId = "blossom_auth_$index"
+                        )
+                        pendingUploadResults = uploadResults.toList()
+                        _uiState.update {
+                            it.copy(
+                                isUploading = false,
+                                pendingAmberIntent = intent,
+                                amberSigningStep = AmberSigningStep.AUTH
+                            )
+                        }
+                        // Amber flow continues in handleAmberSignedAuthEvent
+                        return@launch
+                    }
+                } else {
+                    // Local keys flow: upload all images, then publish
+                    val uploadResults = mutableListOf<UploadedMedia>()
+                    for ((index, item) in media.withIndex()) {
+                        _uiState.update {
+                            it.copy(uploadProgress = "Uploading ${index + 1} of ${media.size}...")
+                        }
+                        val uploadUri = if (!item.isVideo) {
+                            prepareImageForUpload(context, item.uri, selectedFilter)
+                        } else {
+                            item.uri
+                        }
+                        val dimensions = if (item.isVideo) {
+                            getVideoDimensions(context, uploadUri)
+                        } else {
+                            getImageDimensions(context, uploadUri)
+                        }
+
+                        val result = blossomClient.uploadImage(context, uploadUri).getOrThrow()
+                        uploadResults.add(
+                            UploadedMedia(
+                                url = result.url,
                                 sha256 = result.sha256,
                                 mimeType = result.mimeType,
                                 dimensions = dimensions,
-                                caption = _uiState.value.caption,
-                                altText = _uiState.value.altText
+                                isVideo = item.isVideo
                             )
+                        )
+                    }
 
-                            _uiState.update {
-                                it.copy(
-                                    isUploading = false,
-                                    isSuccess = true
-                                )
-                            }
-                        },
-                        onFailure = { error ->
-                            _uiState.update {
-                                it.copy(
-                                    isUploading = false,
-                                    error = error.message ?: "Upload failed"
-                                )
-                            }
-                        }
+                    publishMultiPhotoPost(
+                        uploads = uploadResults,
+                        caption = _uiState.value.caption,
+                        altText = _uiState.value.altText
                     )
+
+                    _uiState.update {
+                        it.copy(isUploading = false, uploadProgress = "", isSuccess = true)
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isUploading = false,
-                        error = e.message ?: "Unknown error"
+                        uploadProgress = "",
+                        error = e.message ?: "Upload failed"
                     )
                 }
             }
@@ -169,52 +207,93 @@ class CreatePostViewModel @Inject constructor(
      */
     fun handleAmberSignedAuthEvent(signedEventJson: String) {
         val prepared = pendingPreparedUpload ?: return
+        val context = pendingContext ?: return
+        val media = _uiState.value.selectedMedia
+        val selectedFilter = _uiState.value.selectedFilter
 
         _uiState.update { it.copy(isUploading = true, pendingAmberIntent = null, amberSigningStep = null) }
 
         viewModelScope.launch {
             try {
                 val uploadResult = blossomClient.uploadWithSignedAuth(prepared, signedEventJson)
+                val result = uploadResult.getOrThrow()
 
-                uploadResult.fold(
-                    onSuccess = { result ->
-                        pendingUploadResult = result
-                        // Now create unsigned post event for Amber signing
-                        val unsignedPostEvent = createUnsignedPhotoPostEvent(
-                            imageUrl = result.url,
-                            sha256 = result.sha256,
-                            mimeType = result.mimeType,
-                            dimensions = pendingDimensions,
-                            caption = _uiState.value.caption,
-                            altText = _uiState.value.altText
-                        )
-                        pendingPostUnsignedEvent = unsignedPostEvent
-                        val intent = keyManager.createAmberSignEventIntent(
-                            eventJson = unsignedPostEvent,
-                            eventId = "photo_post"
-                        )
-                        _uiState.update {
-                            it.copy(
-                                isUploading = false,
-                                pendingAmberIntent = intent,
-                                amberSigningStep = AmberSigningStep.POST
-                            )
-                        }
-                    },
-                    onFailure = { error ->
-                        _uiState.update {
-                            it.copy(
-                                isUploading = false,
-                                error = error.message ?: "Upload failed"
-                            )
-                        }
-                        clearPendingState()
-                    }
+                val currentResults = pendingUploadResults.toMutableList()
+                currentResults.add(
+                    UploadedMedia(
+                        url = result.url,
+                        sha256 = result.sha256,
+                        mimeType = result.mimeType,
+                        dimensions = pendingDimensions,
+                        isVideo = media.getOrNull(currentResults.size)?.isVideo ?: false
+                    )
                 )
+
+                // Check if there are more images to upload
+                val nextIndex = currentResults.size
+                if (nextIndex < media.size) {
+                    _uiState.update {
+                        it.copy(uploadProgress = "Uploading ${nextIndex + 1} of ${media.size}...")
+                    }
+                    val nextItem = media[nextIndex]
+                    val uploadUri = if (!nextItem.isVideo) {
+                        prepareImageForUpload(context, nextItem.uri, selectedFilter)
+                    } else {
+                        nextItem.uri
+                    }
+                    val dimensions = if (nextItem.isVideo) {
+                        getVideoDimensions(context, uploadUri)
+                    } else {
+                        getImageDimensions(context, uploadUri)
+                    }
+
+                    val prepareResult = blossomClient.prepareUpload(context, uploadUri)
+                    val nextPrepared = prepareResult.getOrThrow()
+
+                    pendingPreparedUpload = nextPrepared
+                    pendingDimensions = dimensions
+                    pendingUploadResults = currentResults
+
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = nextPrepared.unsignedAuthEvent,
+                        eventId = "blossom_auth_$nextIndex"
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isUploading = false,
+                            pendingAmberIntent = intent,
+                            amberSigningStep = AmberSigningStep.AUTH
+                        )
+                    }
+                } else {
+                    // All uploads done - create the post event for signing
+                    pendingUploadResults = currentResults
+                    pendingUploadResult = result // keep for Kind 1 compat
+
+                    val unsignedPostEvent = createUnsignedMultiPhotoPostEvent(
+                        uploads = currentResults,
+                        caption = _uiState.value.caption,
+                        altText = _uiState.value.altText
+                    )
+                    pendingPostUnsignedEvent = unsignedPostEvent
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = unsignedPostEvent,
+                        eventId = "photo_post"
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isUploading = false,
+                            uploadProgress = "",
+                            pendingAmberIntent = intent,
+                            amberSigningStep = AmberSigningStep.POST
+                        )
+                    }
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isUploading = false,
+                        uploadProgress = "",
                         error = e.message ?: "Upload failed"
                     )
                 }
@@ -244,10 +323,10 @@ class CreatePostViewModel @Inject constructor(
                     nostrClient.publish(event)
 
                     // Now create Kind 1 event for cross-client compatibility
-                    val uploadResult = pendingUploadResult
-                    if (uploadResult != null) {
+                    val uploads = pendingUploadResults
+                    if (uploads.isNotEmpty()) {
                         val unsignedKind1Event = createUnsignedKind1PostEvent(
-                            imageUrl = uploadResult.url,
+                            imageUrls = uploads.map { it.url },
                             caption = _uiState.value.caption
                         )
                         pendingKind1UnsignedEvent = unsignedKind1Event
@@ -378,15 +457,15 @@ class CreatePostViewModel @Inject constructor(
     /**
      * Create unsigned Kind 1 post event for cross-client compatibility
      */
-    private fun createUnsignedKind1PostEvent(imageUrl: String, caption: String): String {
+    private fun createUnsignedKind1PostEvent(imageUrls: List<String>, caption: String): String {
         val pubkey = keyManager.getPublicKeyHex() ?: ""
         val createdAt = System.currentTimeMillis() / 1000
 
-        // Content is caption followed by image URL
+        val urlBlock = imageUrls.joinToString("\n")
         val content = if (caption.isNotBlank()) {
-            "$caption\n\n$imageUrl"
+            "$caption\n\n$urlBlock"
         } else {
-            imageUrl
+            urlBlock
         }
 
         return JSONObject().apply {
@@ -441,6 +520,7 @@ class CreatePostViewModel @Inject constructor(
     private fun clearPendingState() {
         pendingPreparedUpload = null
         pendingUploadResult = null
+        pendingUploadResults = emptyList()
         pendingDimensions = null
         pendingContext = null
         pendingPostUnsignedEvent = null
@@ -448,39 +528,38 @@ class CreatePostViewModel @Inject constructor(
     }
 
     /**
-     * Create unsigned kind 20 photo post event for Amber signing
+     * Create unsigned kind 20 photo post event for Amber signing (multi-image)
      */
-    private fun createUnsignedPhotoPostEvent(
-        imageUrl: String,
-        sha256: String,
-        mimeType: String,
-        dimensions: Pair<Int, Int>?,
+    private fun createUnsignedMultiPhotoPostEvent(
+        uploads: List<UploadedMedia>,
         caption: String,
         altText: String
     ): String {
         val pubkey = keyManager.getPublicKeyHex() ?: ""
         val createdAt = System.currentTimeMillis() / 1000
 
-        // Build imeta tag
-        val imetaTag = JSONArray().apply {
-            put("imeta")
-            put("url $imageUrl")
-            if (sha256.isNotEmpty()) put("x $sha256")
-            if (mimeType.isNotEmpty()) put("m $mimeType")
-            dimensions?.let { (w, h) ->
-                if (w > 0 && h > 0) put("dim ${w}x${h}")
+        val tags = JSONArray()
+
+        // Build imeta tag for each upload
+        for (upload in uploads) {
+            val imetaTag = JSONArray().apply {
+                put("imeta")
+                put("url ${upload.url}")
+                if (upload.sha256.isNotEmpty()) put("x ${upload.sha256}")
+                if (upload.mimeType.isNotEmpty()) put("m ${upload.mimeType}")
+                upload.dimensions?.let { (w, h) ->
+                    if (w > 0 && h > 0) put("dim ${w}x${h}")
+                }
+                if (altText.isNotBlank()) put("alt $altText")
             }
-            if (altText.isNotBlank()) put("alt $altText")
+            tags.put(imetaTag)
         }
 
-        val tags = JSONArray().apply {
-            put(imetaTag)
-            if (caption.isNotBlank() && caption.length <= 100) {
-                put(JSONArray().apply {
-                    put("title")
-                    put(caption.take(100))
-                })
-            }
+        if (caption.isNotBlank() && caption.length <= 100) {
+            tags.put(JSONArray().apply {
+                put("title")
+                put(caption.take(100))
+            })
         }
 
         return JSONObject().apply {
@@ -492,42 +571,27 @@ class CreatePostViewModel @Inject constructor(
         }.toString()
     }
 
-    private fun publishPhotoPost(
-        imageUrl: String,
-        sha256: String,
-        mimeType: String,
-        dimensions: Pair<Int, Int>?,
+    private fun publishMultiPhotoPost(
+        uploads: List<UploadedMedia>,
         caption: String,
         altText: String
     ) {
         val keys = keyManager.getKeys() ?: return
 
-        // Build imeta tag according to NIP-68
-        val imetaParts = mutableListOf("imeta", "url $imageUrl")
+        val tags = mutableListOf<Tag>()
 
-        if (sha256.isNotEmpty()) {
-            imetaParts.add("x $sha256")
-        }
-
-        if (mimeType.isNotEmpty()) {
-            imetaParts.add("m $mimeType")
-        }
-
-        dimensions?.let { (width, height) ->
-            if (width > 0 && height > 0) {
-                imetaParts.add("dim ${width}x${height}")
+        // Build imeta tag for each upload according to NIP-68
+        for (upload in uploads) {
+            val imetaParts = mutableListOf("imeta", "url ${upload.url}")
+            if (upload.sha256.isNotEmpty()) imetaParts.add("x ${upload.sha256}")
+            if (upload.mimeType.isNotEmpty()) imetaParts.add("m ${upload.mimeType}")
+            upload.dimensions?.let { (w, h) ->
+                if (w > 0 && h > 0) imetaParts.add("dim ${w}x${h}")
             }
+            if (altText.isNotBlank()) imetaParts.add("alt $altText")
+            tags.add(Tag.parse(imetaParts))
         }
 
-        if (altText.isNotBlank()) {
-            imetaParts.add("alt $altText")
-        }
-
-        val tags = mutableListOf(
-            Tag.parse(imetaParts)
-        )
-
-        // Add title tag if caption is short enough
         if (caption.isNotBlank() && caption.length <= 100) {
             tags.add(Tag.parse(listOf("title", caption.take(100))))
         }
@@ -538,12 +602,12 @@ class CreatePostViewModel @Inject constructor(
 
         nostrClient.publish(kind20Event)
 
-        // Also publish Kind 1 for cross-client compatibility (Primal, etc.)
-        // Content is the caption followed by the image URL
+        // Also publish Kind 1 for cross-client compatibility
+        val urlBlock = uploads.joinToString("\n") { it.url }
         val kind1Content = if (caption.isNotBlank()) {
-            "$caption\n\n$imageUrl"
+            "$caption\n\n$urlBlock"
         } else {
-            imageUrl
+            urlBlock
         }
 
         val kind1Event = EventBuilder(Kind(1u), kind1Content, emptyList())
@@ -552,25 +616,102 @@ class CreatePostViewModel @Inject constructor(
         nostrClient.publish(kind1Event)
     }
 
-    private fun applyFilterToUri(context: Context, uri: Uri, filter: ImageFilter): Uri {
+    companion object {
+        private const val MAX_IMAGE_DIMENSION = 2048
+        private const val JPEG_QUALITY = 85
+    }
+
+    /**
+     * Prepare an image for upload: apply EXIF rotation, resize to max 2048px
+     * on the long side, apply filter if needed, and compress as JPEG.
+     */
+    private fun prepareImageForUpload(context: Context, uri: Uri, filter: ImageFilter): Uri {
         val inputStream = context.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Cannot open image")
         val originalBitmap = BitmapFactory.decodeStream(inputStream)
         inputStream.close()
 
-        val filteredBitmap = applyFilter(originalBitmap, filter)
+        // Apply EXIF orientation
+        val orientedBitmap = applyExifOrientation(context, uri, originalBitmap)
 
-        val tempFile = java.io.File(context.cacheDir, "filtered_${System.currentTimeMillis()}.jpg")
-        tempFile.outputStream().use { out ->
-            filteredBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+        // Resize if larger than max dimension
+        val resizedBitmap = resizeBitmap(orientedBitmap, MAX_IMAGE_DIMENSION)
+
+        // Apply filter if needed
+        val finalBitmap = if (filter != ImageFilter.NONE) {
+            val filtered = applyFilter(resizedBitmap, filter)
+            if (resizedBitmap !== orientedBitmap && resizedBitmap !== filtered) {
+                resizedBitmap.recycle()
+            }
+            filtered
+        } else {
+            resizedBitmap
         }
 
-        if (filteredBitmap !== originalBitmap) {
-            filteredBitmap.recycle()
+        val tempFile = java.io.File(context.cacheDir, "prepared_${System.currentTimeMillis()}.jpg")
+        tempFile.outputStream().use { out ->
+            finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        }
+
+        if (finalBitmap !== orientedBitmap && finalBitmap !== originalBitmap) {
+            finalBitmap.recycle()
+        }
+        if (resizedBitmap !== orientedBitmap && resizedBitmap !== finalBitmap) {
+            resizedBitmap.recycle()
+        }
+        if (orientedBitmap !== originalBitmap) {
+            orientedBitmap.recycle()
         }
         originalBitmap.recycle()
 
         return tempFile.toUri()
+    }
+
+    private fun applyExifOrientation(context: Context, uri: Uri, bitmap: Bitmap): Bitmap {
+        val orientation = try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                ExifInterface(stream).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            } ?: ExifInterface.ORIENTATION_NORMAL
+        } catch (e: Exception) {
+            ExifInterface.ORIENTATION_NORMAL
+        }
+
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.preScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.preScale(-1f, 1f)
+            }
+            else -> return bitmap
+        }
+
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    private fun resizeBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val longSide = maxOf(width, height)
+
+        if (longSide <= maxDimension) return bitmap
+
+        val scale = maxDimension.toFloat() / longSide.toFloat()
+        val newWidth = (width * scale).toInt()
+        val newHeight = (height * scale).toInt()
+
+        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
     }
 
     private fun getImageDimensions(context: Context, uri: Uri): Pair<Int, Int>? {
@@ -620,15 +761,25 @@ enum class AmberSigningStep {
     POST_KIND1  // Signing compatibility post event (Kind 1)
 }
 
+data class SelectedMediaItem(
+    val uri: Uri,
+    val isVideo: Boolean = false
+)
+
 data class CreatePostUiState(
-    val selectedImageUri: Uri? = null,
-    val isVideo: Boolean = false,
+    val selectedMedia: List<SelectedMediaItem> = emptyList(),
     val caption: String = "",
     val altText: String = "",
     val selectedFilter: ImageFilter = ImageFilter.NONE,
     val isUploading: Boolean = false,
+    val uploadProgress: String = "",
     val isSuccess: Boolean = false,
     val error: String? = null,
     val pendingAmberIntent: Intent? = null,
     val amberSigningStep: AmberSigningStep? = null
-)
+) {
+    // Convenience accessors for backward compatibility
+    val selectedImageUri: Uri? get() = selectedMedia.firstOrNull()?.uri
+    val isVideo: Boolean get() = selectedMedia.size == 1 && selectedMedia.first().isVideo
+    val hasMedia: Boolean get() = selectedMedia.isNotEmpty()
+}
