@@ -139,6 +139,9 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
 
+    // EXIF data handling
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
