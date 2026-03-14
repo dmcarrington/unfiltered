@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.10] - 2026-03-14
+
+### New Features
+- **Multi-Image Posts**: Create posts with multiple images from camera and/or gallery. Each image gets its own imeta tag per NIP-68.
+- **My Posts Tab**: Added a "My Posts" tab to the Settings screen, showing all your posts in a grid view with fullscreen viewer.
+- **Camera Pinch-to-Zoom**: The in-app camera now supports pinch-to-zoom for better framing.
+
+### Improvements
+- **Image Compression**: All images are now resized (max 2048px) and compressed before upload, reducing upload times.
+- **Image Orientation**: Fixed image orientation for both camera captures and gallery picks by reading and applying EXIF rotation data.
+- **APK Naming**: Release APK files are now named `unfiltered-<version>-<architecture>.apk` for clarity.
+- **Duplicate Post Prevention**: Posts that appear as both Kind 20 and Kind 1 (cross-client compatibility) are now deduplicated in profile views.
+
 ## [1.0.9] - 2026-03-08
 
 ### New Features

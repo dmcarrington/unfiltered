@@ -616,7 +616,7 @@ private fun SettingsTabContent(
 
             // App Info
             Text(
-                text = "Unfiltered v1.05",
+                text = "Unfiltered v1.10",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
