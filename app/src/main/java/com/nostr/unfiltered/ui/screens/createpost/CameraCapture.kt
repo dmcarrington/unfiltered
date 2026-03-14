@@ -1,6 +1,7 @@
 package com.nostr.unfiltered.ui.screens.createpost
 
 import android.net.Uri
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -44,9 +45,14 @@ fun CameraCapture(
     val imageCapture = remember {
         ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setTargetRotation(Surface.ROTATION_0)
             .build()
     }
-    val previewView = remember { PreviewView(context) }
+    val previewView = remember {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
+    }
 
     LaunchedEffect(Unit) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -56,12 +62,31 @@ fun CameraCapture(
                 it.surfaceProvider = previewView.surfaceProvider
             }
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
+            val camera = cameraProvider.bindToLifecycle(
                 lifecycleOwner,
                 CameraSelector.DEFAULT_BACK_CAMERA,
                 preview,
                 imageCapture
             )
+
+            // Enable pinch-to-zoom
+            previewView.controller = null // ensure no conflicting controller
+            val cameraControl = camera.cameraControl
+            val cameraInfo = camera.cameraInfo
+            val scaleGestureDetector = android.view.ScaleGestureDetector(
+                context,
+                object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
+                        val currentZoom = cameraInfo.zoomState.value?.zoomRatio ?: 1f
+                        cameraControl.setZoomRatio(currentZoom * detector.scaleFactor)
+                        return true
+                    }
+                }
+            )
+            previewView.setOnTouchListener { _, event ->
+                scaleGestureDetector.onTouchEvent(event)
+                true
+            }
         }, ContextCompat.getMainExecutor(context))
     }
 
@@ -98,10 +123,17 @@ fun CameraCapture(
                 .clip(CircleShape)
                 .background(Color.White)
                 .clickable {
+                    // Update rotation to current display rotation at capture time
+                    val display = (context as? android.app.Activity)?.windowManager?.defaultDisplay
+                    display?.rotation?.let { imageCapture.targetRotation = it }
+
                     val photoDir = File(context.cacheDir, "camera_photos")
                     photoDir.mkdirs()
                     val photoFile = File(photoDir, "photo_${System.currentTimeMillis()}.jpg")
-                    val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+                    val metadata = ImageCapture.Metadata()
+                    val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile)
+                        .setMetadata(metadata)
+                        .build()
                     imageCapture.takePicture(
                         outputOptions,
                         ContextCompat.getMainExecutor(context),
