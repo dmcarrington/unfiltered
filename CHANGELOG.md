@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.10] - 2026-03-14
+## [1.0.10] - 2026-03-14
 
 ### New Features
 - **Multi-Image Posts**: Create posts with multiple images from camera and/or gallery. Each image gets its own imeta tag per NIP-68.
