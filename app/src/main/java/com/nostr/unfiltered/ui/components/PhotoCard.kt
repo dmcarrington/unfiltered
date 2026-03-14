@@ -1,10 +1,13 @@
 package com.nostr.unfiltered.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -15,19 +18,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,15 +42,29 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.nostr.models.PhotoPost
 
+private val REACTION_EMOJIS = listOf(
+    "\u2764\uFE0F",     // ❤️ red heart
+    "\uD83D\uDE02",     // 😂 face with tears of joy
+    "\uD83D\uDE0D",     // 😍 heart eyes
+    "\uD83D\uDE31",     // 😱 face screaming
+    "\uD83D\uDE4F",     // 🙏 folded hands
+    "\uD83D\uDD25",     // 🔥 fire
+    "\uD83D\uDC4D",     // 👍 thumbs up
+    "\uD83C\uDF89",     // 🎉 party popper
+)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhotoCard(
     post: PhotoPost,
     onProfileClick: () -> Unit,
     onLikeClick: () -> Unit,
+    onReactClick: (String) -> Unit = { onLikeClick() },
     onZapClick: () -> Unit = {},
     onImageClick: () -> Unit = {},
     onMediaClick: (index: Int, url: String) -> Unit = { _, _ -> onImageClick() },
@@ -145,27 +165,34 @@ fun PhotoCard(
                 }
             }
 
-            // Actions row
+            // Reaction picker row
+            var showReactionPicker by remember { mutableStateOf(false) }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onLikeClick) {
-                    Icon(
-                        imageVector = if (post.isLiked) Icons.Filled.Favorite
-                        else Icons.Outlined.FavoriteBorder,
-                        contentDescription = if (post.isLiked) "Unlike" else "Like",
-                        tint = if (post.isLiked) Color.Red
-                        else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                if (post.likeCount > 0) {
+                // Reaction button - tap to toggle picker
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            if (post.myReaction != null) {
+                                // Already reacted - no action
+                            } else {
+                                showReactionPicker = !showReactionPicker
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = "${post.likeCount}",
-                        style = MaterialTheme.typography.bodySmall
+                        text = post.myReaction ?: "\u2764\uFE0F",
+                        fontSize = if (post.myReaction != null) 22.sp else 20.sp,
+                        color = if (post.myReaction != null) Color.Unspecified
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                     )
                 }
 
@@ -189,6 +216,72 @@ fun PhotoCard(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                }
+            }
+
+            // Emoji picker (expandable)
+            if (showReactionPicker) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    REACTION_EMOJIS.forEach { emoji ->
+                        Text(
+                            text = emoji,
+                            fontSize = 24.sp,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable {
+                                    onReactClick(emoji)
+                                    showReactionPicker = false
+                                }
+                                .padding(4.dp)
+                        )
+                    }
+                }
+            }
+
+            // Reaction counts display
+            if (post.reactions.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    post.reactions.entries
+                        .sortedByDescending { it.value }
+                        .forEach { (emoji, count) ->
+                            val isMyEmoji = post.myReaction == emoji
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .then(
+                                        if (isMyEmoji) Modifier.border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.primary,
+                                            RoundedCornerShape(12.dp)
+                                        ) else Modifier
+                                    )
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(
+                                            alpha = if (isMyEmoji) 0.8f else 0.5f
+                                        )
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(text = emoji, fontSize = 14.sp)
+                                Text(
+                                    text = "$count",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
                 }
             }
 

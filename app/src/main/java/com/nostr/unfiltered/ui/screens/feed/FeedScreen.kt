@@ -358,6 +358,7 @@ fun FeedScreen(
                                 post = post,
                                 onProfileClick = { onProfileClick(post.authorPubkey) },
                                 onLikeClick = { viewModel.likePost(post) },
+                                onReactClick = { emoji -> viewModel.reactToPost(post, emoji) },
                                 onZapClick = { viewModel.initiateZap(post) },
                                 onMediaClick = { _, _ ->
                                     selectedPostIndex = postIndex

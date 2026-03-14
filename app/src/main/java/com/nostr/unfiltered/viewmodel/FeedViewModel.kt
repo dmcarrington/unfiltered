@@ -77,13 +77,14 @@ class FeedViewModel @Inject constructor(
     /**
      * Calculate trending score with time decay.
      * Recent posts are boosted; older posts need more likes to rank high.
-     * Formula: score = (likeCount + 1) / (1 + hoursOld / 6)
+     * Formula: score = (reactionCount + 1) / (1 + hoursOld / 6)
      */
     private fun calculateTrendingScore(post: PhotoPost): Double {
         val now = System.currentTimeMillis() / 1000
         val ageSeconds = (now - post.createdAt).coerceAtLeast(0)
         val ageHours = ageSeconds / 3600.0
-        return (post.likeCount + 1).toDouble() / (1.0 + ageHours / 6.0)
+        val reactionCount = post.reactions.values.sum()
+        return (reactionCount + 1).toDouble() / (1.0 + ageHours / 6.0)
     }
 
     val uiState: StateFlow<FeedUiState> = combine(
@@ -294,6 +295,10 @@ class FeedViewModel @Inject constructor(
 
     fun likePost(post: PhotoPost) {
         feedRepository.likePost(post)
+    }
+
+    fun reactToPost(post: PhotoPost, emoji: String) {
+        feedRepository.reactToPost(post, emoji)
     }
 
     fun handleAmberSignedLike(signedEventJson: String) {
