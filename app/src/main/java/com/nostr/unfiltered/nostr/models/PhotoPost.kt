@@ -39,8 +39,8 @@ data class PhotoPost(
     val authorLud16: String? = null,
 
     // Interaction state
-    val isLiked: Boolean = false,
-    val likeCount: Int = 0,
+    val reactions: Map<String, Int> = emptyMap(), // emoji -> count
+    val myReaction: String? = null, // emoji the current user reacted with, or null
     val zapAmount: Long = 0,
     val isZapped: Boolean = false,
 

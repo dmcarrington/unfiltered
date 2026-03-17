@@ -44,7 +44,7 @@ class FeedRepository @Inject constructor(
     private val postsCache = ConcurrentHashMap<String, PhotoPost>()
 
     // Track which posts the current user has liked (event IDs)
-    private val myLikedPosts = mutableSetOf<String>()
+    private val myReactions = mutableMapOf<String, String>() // postId -> emoji
 
     // Track seen reaction event IDs to prevent double-counting
     private val seenReactionIds = mutableSetOf<String>()
@@ -87,6 +87,7 @@ class FeedRepository @Inject constructor(
 
     private var pendingLikePostId: String? = null
     private var pendingLikeUnsignedEvent: String? = null
+    private var pendingReactionEmoji: String? = null
 
     init {
         observeEvents()
@@ -157,20 +158,34 @@ class FeedRepository @Inject constructor(
         val reactorPubkey = event.author().toHex()
         val myPubkey = keyManager.getPublicKeyHex()
 
+        // Normalize reaction content: "+" and "" both mean heart
+        val rawContent = event.content()
+        val emoji = normalizeReactionEmoji(rawContent)
+
         // Check if this is the current user's reaction
         val isMyReaction = reactorPubkey == myPubkey
         if (isMyReaction) {
-            myLikedPosts.add(targetEventId)
+            myReactions[targetEventId] = emoji
         }
 
-        // Update like status on the target post
+        // Update reaction counts on the target post
         postsCache[targetEventId]?.let { post ->
+            val updatedReactions = post.reactions.toMutableMap()
+            updatedReactions[emoji] = (updatedReactions[emoji] ?: 0) + 1
             val updatedPost = post.copy(
-                likeCount = post.likeCount + 1,
-                isLiked = post.isLiked || isMyReaction
+                reactions = updatedReactions,
+                myReaction = if (isMyReaction) emoji else post.myReaction
             )
             postsCache[targetEventId] = updatedPost
             refreshPostsList()
+        }
+    }
+
+    private fun normalizeReactionEmoji(content: String): String {
+        return when {
+            content.isEmpty() || content == "+" -> "\u2764\uFE0F" // red heart
+            content == "-" -> "\uD83D\uDC4E" // thumbs down
+            else -> content
         }
     }
 
@@ -451,7 +466,7 @@ class FeedRepository @Inject constructor(
             authorNip05 = metadata?.nip05,
             authorLud16 = metadata?.lud16,
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
-            isLiked = myLikedPosts.contains(eventId),
+            myReaction = myReactions[eventId],
             isZapped = myZappedPosts.contains(eventId)
         )
     }
@@ -708,18 +723,19 @@ class FeedRepository @Inject constructor(
 
     // ==================== Actions ====================
 
-    fun likePost(post: PhotoPost) {
+    fun reactToPost(post: PhotoPost, emoji: String) {
         scope.launch {
             try {
                 if (keyManager.isAmberConnected()) {
                     // Amber flow: create unsigned event and request signing
-                    val unsignedEvent = createUnsignedLikeEvent(post)
+                    val unsignedEvent = createUnsignedReactionEvent(post, emoji)
                     val intent = keyManager.createAmberSignEventIntent(
                         eventJson = unsignedEvent,
-                        eventId = "like_${post.id}"
+                        eventId = "react_${post.id}"
                     )
                     pendingLikePostId = post.id
                     pendingLikeUnsignedEvent = unsignedEvent
+                    pendingReactionEmoji = emoji
                     _pendingLikeIntent.value = intent
                 } else {
                     // Local keys flow
@@ -731,14 +747,19 @@ class FeedRepository @Inject constructor(
                         Tag.parse(listOf("k", "20"))
                     )
 
-                    val event = EventBuilder(Kind(7u), "+", tags)
+                    val event = EventBuilder(Kind(7u), emoji, tags)
                         .toEvent(keys)
 
                     nostrClient.publish(event)
 
                     // Optimistically update UI
                     postsCache[post.id]?.let { cached ->
-                        postsCache[post.id] = cached.copy(isLiked = true, likeCount = cached.likeCount + 1)
+                        val updatedReactions = cached.reactions.toMutableMap()
+                        updatedReactions[emoji] = (updatedReactions[emoji] ?: 0) + 1
+                        postsCache[post.id] = cached.copy(
+                            reactions = updatedReactions,
+                            myReaction = emoji
+                        )
                         refreshPostsList()
                     }
                 }
@@ -748,10 +769,15 @@ class FeedRepository @Inject constructor(
         }
     }
 
+    // Keep for backward compatibility
+    fun likePost(post: PhotoPost) {
+        reactToPost(post, "\u2764\uFE0F")
+    }
+
     /**
      * Create unsigned kind 7 (reaction) event for Amber signing
      */
-    private fun createUnsignedLikeEvent(post: PhotoPost): String {
+    private fun createUnsignedReactionEvent(post: PhotoPost, emoji: String): String {
         val pubkey = keyManager.getPublicKeyHex() ?: ""
         val createdAt = System.currentTimeMillis() / 1000
 
@@ -766,7 +792,7 @@ class FeedRepository @Inject constructor(
             put("pubkey", pubkey)
             put("created_at", createdAt)
             put("tags", tags)
-            put("content", "+")
+            put("content", emoji)
         }.toString()
     }
 
@@ -792,8 +818,14 @@ class FeedRepository @Inject constructor(
 
                     // Optimistically update UI
                     pendingLikePostId?.let { postId ->
+                        val emoji = pendingReactionEmoji ?: "\u2764\uFE0F"
                         postsCache[postId]?.let { cached ->
-                            postsCache[postId] = cached.copy(isLiked = true, likeCount = cached.likeCount + 1)
+                            val updatedReactions = cached.reactions.toMutableMap()
+                            updatedReactions[emoji] = (updatedReactions[emoji] ?: 0) + 1
+                            postsCache[postId] = cached.copy(
+                                reactions = updatedReactions,
+                                myReaction = emoji
+                            )
                             refreshPostsList()
                         }
                     }
@@ -873,12 +905,13 @@ class FeedRepository @Inject constructor(
         _pendingLikeIntent.value = null
         pendingLikePostId = null
         pendingLikeUnsignedEvent = null
+        pendingReactionEmoji = null
     }
 
     fun clearCache() {
         postsCache.clear()
         seenReactionIds.clear()
-        myLikedPosts.clear()
+        myReactions.clear()
         seenZapReceiptIds.clear()
         myZappedPosts.clear()
         _posts.value = emptyList()
