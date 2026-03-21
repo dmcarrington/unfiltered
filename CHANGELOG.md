@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.11] - 2026-03-21
+
+### Improvements
+- **Fullscreen Image Navigation**: Added a back button to close the fullscreen image viewer.
+- **Reaction Types**: Support for multiple reaction types (emoticons) beyond simple likes.
+
+### Under the Hood
+- **Zapstore Metadata**: Improved zapstore.yaml to populate more tags from GitHub.
+
 ## [1.0.10] - 2026-03-14
 
 ### New Features
