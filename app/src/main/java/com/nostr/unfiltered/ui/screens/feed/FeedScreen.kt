@@ -88,6 +88,7 @@ fun FeedScreen(
     onSettingsClick: () -> Unit,
     onWalletClick: () -> Unit,
     onNotificationsClick: () -> Unit,
+    onHashtagClick: (String) -> Unit = {},
     viewModel: FeedViewModel = hiltViewModel(),
     notificationsViewModel: NotificationsViewModel = hiltViewModel()
 ) {
@@ -363,6 +364,7 @@ fun FeedScreen(
                                 onMediaClick = { _, _ ->
                                     selectedPostIndex = postIndex
                                 },
+                                onHashtagClick = onHashtagClick,
                                 showZapButton = uiState.canZap && !post.authorLud16.isNullOrEmpty()
                             )
                         }

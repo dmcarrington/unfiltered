@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -68,6 +69,7 @@ fun PhotoCard(
     onZapClick: () -> Unit = {},
     onImageClick: () -> Unit = {},
     onMediaClick: (index: Int, url: String) -> Unit = { _, _ -> onImageClick() },
+    onHashtagClick: (String) -> Unit = {},
     showZapButton: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -294,6 +296,28 @@ fun PhotoCard(
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            // Hashtag chips
+            if (post.hashtags.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    post.hashtags.forEach { hashtag ->
+                        AssistChip(
+                            onClick = { onHashtagClick(hashtag) },
+                            label = {
+                                Text(
+                                    text = "#$hashtag",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            },
+                            modifier = Modifier.height(28.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))

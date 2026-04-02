@@ -43,6 +43,9 @@ sealed class Screen(val route: String) {
     object ProfileEdit : Screen("profile_edit")
     object Wallet : Screen("wallet")
     object Notifications : Screen("notifications")
+    object HashtagSearch : Screen("search/hashtag/{hashtag}") {
+        fun createRoute(hashtag: String) = "search/hashtag/$hashtag"
+    }
 }
 
 @Composable
@@ -91,6 +94,9 @@ fun UnfilteredNavGraph(
                 },
                 onNotificationsClick = {
                     navController.navigate(Screen.Notifications.route)
+                },
+                onHashtagClick = { hashtag ->
+                    navController.navigate(Screen.HashtagSearch.createRoute(hashtag))
                 }
             )
         }
@@ -127,6 +133,20 @@ fun UnfilteredNavGraph(
                 onUserClick = { pubkey ->
                     navController.navigate(Screen.Profile.createRoute(pubkey))
                 }
+            )
+        }
+
+        composable(
+            route = Screen.HashtagSearch.route,
+            arguments = listOf(navArgument("hashtag") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val hashtag = backStackEntry.arguments?.getString("hashtag") ?: return@composable
+            SearchScreen(
+                onBackClick = { navController.popBackStack() },
+                onUserClick = { pubkey ->
+                    navController.navigate(Screen.Profile.createRoute(pubkey))
+                },
+                initialHashtag = hashtag
             )
         }
 
