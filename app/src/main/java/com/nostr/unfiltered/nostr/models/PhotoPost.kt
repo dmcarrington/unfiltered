@@ -47,6 +47,9 @@ data class PhotoPost(
     // Hashtags (from "t" tags)
     val hashtags: List<String> = emptyList(),
 
+    // Comments
+    val commentCount: Int = 0,
+
     // For display
     val relativeTime: String = ""
 ) {

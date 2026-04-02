@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
@@ -70,6 +71,7 @@ fun PhotoCard(
     onImageClick: () -> Unit = {},
     onMediaClick: (index: Int, url: String) -> Unit = { _, _ -> onImageClick() },
     onHashtagClick: (String) -> Unit = {},
+    onCommentClick: () -> Unit = {},
     showZapButton: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -196,6 +198,26 @@ fun PhotoCard(
                         color = if (post.myReaction != null) Color.Unspecified
                         else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                     )
+                }
+
+                // Comment button
+                IconButton(onClick = onCommentClick) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.ChatBubbleOutline,
+                            contentDescription = "Comments",
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (post.commentCount > 0) {
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = "${post.commentCount}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.weight(1f))

@@ -71,9 +71,11 @@ import com.nostr.unfiltered.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.nostr.unfiltered.ui.components.CommentSheet
 import com.nostr.unfiltered.ui.components.FullscreenImageDialog
 import com.nostr.unfiltered.ui.components.PhotoCard
 import com.nostr.unfiltered.ui.components.UserAvatar
+import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.viewmodel.FeedMode
 import com.nostr.unfiltered.viewmodel.FeedViewModel
 import com.nostr.unfiltered.viewmodel.NotificationsViewModel
@@ -98,7 +100,35 @@ fun FeedScreen(
     val pendingLikeIntent by viewModel.pendingLikeIntent.collectAsState()
     val hasNewPosts by viewModel.hasNewPosts.collectAsState()
     val hasUnreadNotifications by notificationsViewModel.hasUnread.collectAsState()
+    val pendingCommentIntent by viewModel.pendingCommentIntent.collectAsState()
     val listState = rememberLazyListState()
+
+    // Comment sheet state
+    var commentPost by remember { mutableStateOf<PhotoPost?>(null) }
+
+    // Amber comment signing launcher
+    val amberCommentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val signedEvent = result.data?.getStringExtra("event")
+                ?: result.data?.getStringExtra("signature")
+                ?: result.data?.getStringExtra("result")
+            if (signedEvent != null) {
+                viewModel.handleAmberSignedComment(signedEvent)
+            } else {
+                viewModel.clearPendingCommentIntent()
+            }
+        } else {
+            viewModel.clearPendingCommentIntent()
+        }
+    }
+
+    LaunchedEffect(pendingCommentIntent) {
+        pendingCommentIntent?.let { intent ->
+            amberCommentLauncher.launch(intent)
+        }
+    }
 
     // Amber like signing launcher
     val amberLikeLauncher = rememberLauncherForActivityResult(
@@ -365,6 +395,7 @@ fun FeedScreen(
                                     selectedPostIndex = postIndex
                                 },
                                 onHashtagClick = onHashtagClick,
+                                onCommentClick = { commentPost = post },
                                 showZapButton = uiState.canZap && !post.authorLud16.isNullOrEmpty()
                             )
                         }
@@ -436,6 +467,17 @@ fun FeedScreen(
             posts = uiState.posts,
             initialIndex = selectedPostIndex,
             onDismiss = { selectedPostIndex = -1 }
+        )
+    }
+
+    // Comment Bottom Sheet
+    commentPost?.let { post ->
+        CommentSheet(
+            comments = viewModel.getCommentsForPost(post.id),
+            onDismiss = { commentPost = null },
+            onPostComment = { text ->
+                viewModel.commentOnPost(post, text)
+            }
         )
     }
 }

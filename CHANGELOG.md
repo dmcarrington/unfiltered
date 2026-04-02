@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.12] - 2026-04-02
+
+### New Features
+- **Hashtag Support**: Add hashtags to posts by typing `#hashtag` in the caption. Hashtags are published as Nostr `t` tags on Kind 20 events. Hashtags display as styled chips below post captions.
+- **Hashtag Search**: Search for posts by hashtag using `#hashtag` in the search box. Results display as an Instagram-style photo grid.
+- **Post Comments**: View and post comments on posts via a bottom sheet. Comment counts shown on each post card. Supports both local key and Amber signing.
+
+### Bug Fixes
+- **Multi-Image Navigation**: Fixed fullscreen image viewer to swipe through all images within a multi-image post before moving to the next post.
+
 ## [1.0.11] - 2026-03-21
 
 ### Improvements
