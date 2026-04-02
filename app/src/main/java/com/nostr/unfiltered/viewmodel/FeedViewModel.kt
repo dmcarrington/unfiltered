@@ -60,6 +60,9 @@ class FeedViewModel @Inject constructor(
     // Amber like signing flow
     val pendingLikeIntent: StateFlow<Intent?> = feedRepository.pendingLikeIntent
 
+    // Amber comment signing flow
+    val pendingCommentIntent: StateFlow<Intent?> = feedRepository.pendingCommentIntent
+
     // Current user's profile picture URL (reactive)
     private val _currentUserPictureUrl = MutableStateFlow<String?>(
         keyManager.getPublicKeyHex()?.let { metadataCache.get(it)?.picture }
@@ -307,6 +310,20 @@ class FeedViewModel @Inject constructor(
 
     fun clearPendingLikeIntent() {
         feedRepository.clearPendingLikeIntent()
+    }
+
+    fun commentOnPost(post: PhotoPost, commentText: String) {
+        feedRepository.commentOnPost(post, commentText)
+    }
+
+    fun getCommentsForPost(postId: String) = feedRepository.getCommentsForPost(postId)
+
+    fun handleAmberSignedComment(signedEventJson: String) {
+        feedRepository.handleAmberSignedComment(signedEventJson)
+    }
+
+    fun clearPendingCommentIntent() {
+        feedRepository.clearPendingCommentIntent()
     }
 
     fun loadMorePosts() {

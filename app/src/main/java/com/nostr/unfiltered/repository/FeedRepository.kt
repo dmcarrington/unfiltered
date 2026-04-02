@@ -6,6 +6,7 @@ import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.NostrEvent
 import com.nostr.unfiltered.nostr.SearchService
+import com.nostr.unfiltered.nostr.models.Comment
 import com.nostr.unfiltered.nostr.models.ContactList
 import com.nostr.unfiltered.nostr.models.ImageDimensions
 import com.nostr.unfiltered.nostr.models.MediaItem
@@ -55,6 +56,10 @@ class FeedRepository @Inject constructor(
     // Track seen zap receipt event IDs to prevent double-counting
     private val seenZapReceiptIds = mutableSetOf<String>()
 
+    // Comment caches: postId -> list of comments
+    private val commentsCache = ConcurrentHashMap<String, MutableList<Comment>>()
+    private val seenCommentIds = mutableSetOf<String>()
+
     private val _posts = MutableStateFlow<List<PhotoPost>>(emptyList())
     val posts: StateFlow<List<PhotoPost>> = _posts.asStateFlow()
 
@@ -89,6 +94,14 @@ class FeedRepository @Inject constructor(
     private var pendingLikeUnsignedEvent: String? = null
     private var pendingReactionEmoji: String? = null
 
+    // Amber signing flow for comments
+    private val _pendingCommentIntent = MutableStateFlow<Intent?>(null)
+    val pendingCommentIntent: StateFlow<Intent?> = _pendingCommentIntent.asStateFlow()
+
+    private var pendingCommentPostId: String? = null
+    private var pendingCommentUnsignedEvent: String? = null
+    private var pendingCommentText: String? = null
+
     init {
         observeEvents()
     }
@@ -107,7 +120,7 @@ class FeedRepository @Inject constructor(
 
         when (kind) {
             0 -> handleMetadataEvent(event)
-            1 -> handlePhotoPostEvent(event) // Kind 1 notes may contain images
+            1 -> handleKind1Event(event, nostrEvent.subscriptionId)
             3 -> handleContactListEvent(event)
             7 -> handleReactionEvent(event)
             20 -> handlePhotoPostEvent(event)
@@ -186,6 +199,62 @@ class FeedRepository @Inject constructor(
             content.isEmpty() || content == "+" -> "\u2764\uFE0F" // red heart
             content == "-" -> "\uD83D\uDC4E" // thumbs down
             else -> content
+        }
+    }
+
+    private fun handleKind1Event(event: Event, subscriptionId: String) {
+        // If this is from a comment subscription, handle as comment
+        if (subscriptionId == "post_comments") {
+            handleCommentEvent(event)
+            return
+        }
+
+        // Check if this Kind 1 has an "e" tag referencing a known post — it's a comment
+        val tags = parseTagsFromEvent(event)
+        val referencedPostId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1)
+        if (referencedPostId != null && postsCache.containsKey(referencedPostId)) {
+            handleCommentEvent(event)
+            return
+        }
+
+        // Otherwise treat as a photo post (Kind 1 with images)
+        handlePhotoPostEvent(event)
+    }
+
+    private fun handleCommentEvent(event: Event) {
+        val commentId = event.id().toHex()
+        if (!seenCommentIds.add(commentId)) return
+
+        val tags = parseTagsFromEvent(event)
+        val targetPostId = tags.find { it.size >= 2 && it[0] == "e" }?.get(1) ?: return
+        val content = event.content()
+        if (content.isBlank()) return
+
+        val authorPubkey = event.author().toHex()
+        val metadata = metadataCache.get(authorPubkey)
+
+        val comment = Comment(
+            id = commentId,
+            postId = targetPostId,
+            authorPubkey = authorPubkey,
+            content = content,
+            createdAt = event.createdAt().asSecs().toLong(),
+            authorName = metadata?.bestName,
+            authorAvatar = metadata?.picture,
+            authorNip05 = metadata?.nip05,
+            relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong())
+        )
+
+        val postComments = commentsCache.getOrPut(targetPostId) { mutableListOf() }
+        synchronized(postComments) {
+            postComments.add(comment)
+            postComments.sortByDescending { it.createdAt }
+        }
+
+        // Update comment count on the post
+        postsCache[targetPostId]?.let { post ->
+            postsCache[targetPostId] = post.copy(commentCount = postComments.size)
+            refreshPostsList()
         }
     }
 
@@ -376,6 +445,14 @@ class FeedRepository @Inject constructor(
                             .limit(500u)
 
                         nostrClient.subscribe("post_zap_receipts", listOf(zapReceiptsFilter))
+
+                        // Also subscribe to comments (Kind 1) referencing these posts
+                        val commentsFilter = Filter()
+                            .kind(Kind(1u))
+                            .events(eventIds)
+                            .limit(500u)
+
+                        nostrClient.subscribe("post_comments", listOf(commentsFilter))
                     }
                 } catch (e: Exception) {
                     // Handle error silently
@@ -776,6 +853,135 @@ class FeedRepository @Inject constructor(
         reactToPost(post, "\u2764\uFE0F")
     }
 
+    fun commentOnPost(post: PhotoPost, commentText: String) {
+        scope.launch {
+            try {
+                if (keyManager.isAmberConnected()) {
+                    val unsignedEvent = createUnsignedCommentEvent(post, commentText)
+                    val intent = keyManager.createAmberSignEventIntent(
+                        eventJson = unsignedEvent,
+                        eventId = "comment_${post.id}"
+                    )
+                    pendingCommentPostId = post.id
+                    pendingCommentUnsignedEvent = unsignedEvent
+                    pendingCommentText = commentText
+                    _pendingCommentIntent.value = intent
+                } else {
+                    val keys = keyManager.getKeys() ?: return@launch
+
+                    val tags = listOf(
+                        Tag.parse(listOf("e", post.id, "", "root")),
+                        Tag.parse(listOf("p", post.authorPubkey)),
+                        Tag.parse(listOf("k", "20"))
+                    )
+
+                    val event = EventBuilder(Kind(1u), commentText, tags)
+                        .toEvent(keys)
+
+                    nostrClient.publish(event)
+
+                    // Optimistically add comment to cache
+                    addOptimisticComment(post.id, commentText, event.id().toHex(), event.createdAt().asSecs().toLong())
+                }
+            } catch (e: Exception) {
+                // Handle error
+            }
+        }
+    }
+
+    fun handleAmberSignedComment(signedEventJson: String) {
+        scope.launch {
+            try {
+                val event = try {
+                    Event.fromJson(signedEventJson)
+                } catch (e: Exception) {
+                    reconstructSignedCommentEvent(signedEventJson)
+                }
+
+                if (event != null) {
+                    nostrClient.publish(event)
+                    pendingCommentPostId?.let { postId ->
+                        pendingCommentText?.let { text ->
+                            addOptimisticComment(postId, text, event.id().toHex(), event.createdAt().asSecs().toLong())
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Handle error
+            } finally {
+                clearPendingCommentIntent()
+            }
+        }
+    }
+
+    private fun reconstructSignedCommentEvent(signature: String): Event? {
+        val unsignedJson = pendingCommentUnsignedEvent ?: return null
+        return try {
+            val eventObj = JSONObject(unsignedJson)
+            val serialized = computeEventSerialization(eventObj)
+            val eventId = computeSha256Hex(serialized)
+            eventObj.put("id", eventId)
+            eventObj.put("sig", signature)
+            Event.fromJson(eventObj.toString())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun createUnsignedCommentEvent(post: PhotoPost, commentText: String): String {
+        val pubkey = keyManager.getPublicKeyHex() ?: ""
+        val createdAt = System.currentTimeMillis() / 1000
+
+        val tags = JSONArray().apply {
+            put(JSONArray().apply { put("e"); put(post.id); put(""); put("root") })
+            put(JSONArray().apply { put("p"); put(post.authorPubkey) })
+            put(JSONArray().apply { put("k"); put("20") })
+        }
+
+        return JSONObject().apply {
+            put("kind", 1)
+            put("pubkey", pubkey)
+            put("created_at", createdAt)
+            put("tags", tags)
+            put("content", commentText)
+        }.toString()
+    }
+
+    private fun addOptimisticComment(postId: String, text: String, eventId: String, createdAt: Long) {
+        val myPubkey = keyManager.getPublicKeyHex() ?: return
+        val metadata = metadataCache.get(myPubkey)
+
+        val comment = Comment(
+            id = eventId,
+            postId = postId,
+            authorPubkey = myPubkey,
+            content = text,
+            createdAt = createdAt,
+            authorName = metadata?.bestName,
+            authorAvatar = metadata?.picture,
+            authorNip05 = metadata?.nip05,
+            relativeTime = "now"
+        )
+
+        seenCommentIds.add(eventId)
+        val postComments = commentsCache.getOrPut(postId) { mutableListOf() }
+        synchronized(postComments) {
+            postComments.add(0, comment)
+        }
+
+        postsCache[postId]?.let { post ->
+            postsCache[postId] = post.copy(commentCount = postComments.size)
+            refreshPostsList()
+        }
+    }
+
+    fun clearPendingCommentIntent() {
+        _pendingCommentIntent.value = null
+        pendingCommentPostId = null
+        pendingCommentUnsignedEvent = null
+        pendingCommentText = null
+    }
+
     /**
      * Create unsigned kind 7 (reaction) event for Amber signing
      */
@@ -910,12 +1116,18 @@ class FeedRepository @Inject constructor(
         pendingReactionEmoji = null
     }
 
+    fun getCommentsForPost(postId: String): List<Comment> {
+        return commentsCache[postId]?.toList() ?: emptyList()
+    }
+
     fun clearCache() {
         postsCache.clear()
         seenReactionIds.clear()
         myReactions.clear()
         seenZapReceiptIds.clear()
         myZappedPosts.clear()
+        commentsCache.clear()
+        seenCommentIds.clear()
         _posts.value = emptyList()
     }
 
