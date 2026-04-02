@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.MetadataCache
 import com.nostr.unfiltered.nostr.NostrClient
+import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import android.util.Log
@@ -38,6 +39,7 @@ class SearchViewModel @Inject constructor(
     companion object {
         private const val SEARCH_NAME_SUB = "search_name"
         private const val SEARCH_DIRECT_PREFIX = "search_direct_"
+        private const val SEARCH_HASHTAG_SUB = "search_hashtag"
         private const val SEARCH_RELAY = "wss://search.nos.today"
     }
 
@@ -56,9 +58,23 @@ class SearchViewModel @Inject constructor(
             nostrClient.events.collect { nostrEvent ->
                 val event = nostrEvent.event
                 val kind = event.kind().asU16().toInt()
-                if (kind != 0) return@collect
-
                 val subId = nostrEvent.subscriptionId
+
+                // Handle hashtag search results (Kind 20)
+                if (subId == SEARCH_HASHTAG_SUB && kind == 20) {
+                    val post = feedRepository.parsePhotoPost(event)
+                    if (post != null) {
+                        _uiState.update { state ->
+                            if (state.hashtagPosts.none { it.id == post.id }) {
+                                state.copy(hashtagPosts = (state.hashtagPosts + post).sortedByDescending { it.createdAt })
+                            } else state
+                        }
+                    }
+                    return@collect
+                }
+
+                // Handle user search results (Kind 0)
+                if (kind != 0) return@collect
                 if (!subId.startsWith(SEARCH_DIRECT_PREFIX) && subId != SEARCH_NAME_SUB) return@collect
 
                 val pubkey = event.author().toHex()
@@ -87,9 +103,10 @@ class SearchViewModel @Inject constructor(
         // Cancel previous search
         searchJob?.cancel()
         nostrClient.unsubscribe(SEARCH_NAME_SUB)
+        nostrClient.unsubscribe(SEARCH_HASHTAG_SUB)
 
         if (query.isBlank()) {
-            _uiState.update { it.copy(results = emptyList(), isSearching = false) }
+            _uiState.update { it.copy(results = emptyList(), hashtagPosts = emptyList(), isSearching = false, isHashtagSearch = false) }
             return
         }
 
@@ -100,10 +117,22 @@ class SearchViewModel @Inject constructor(
             // Debounce
             delay(300)
 
-            _uiState.update { it.copy(results = emptyList()) }
+            _uiState.update { it.copy(results = emptyList(), hashtagPosts = emptyList()) }
 
             // Ensure we're connected
             nostrClient.reconnect()
+
+            val trimmed = query.trim()
+
+            // Hashtag search
+            if (trimmed.startsWith("#") && trimmed.length > 1) {
+                val hashtag = trimmed.removePrefix("#").lowercase()
+                _uiState.update { it.copy(isHashtagSearch = true) }
+                searchByHashtag(hashtag)
+                return@launch
+            }
+
+            _uiState.update { it.copy(isHashtagSearch = false) }
 
             // Check if query is an npub or nprofile
             val directPubkey = tryParseNostrIdentifier(query)
@@ -115,6 +144,10 @@ class SearchViewModel @Inject constructor(
             // Search by name using NIP-50
             searchByName(query)
         }
+    }
+
+    fun searchHashtag(hashtag: String) {
+        search("#$hashtag")
     }
 
     private fun tryParseNostrIdentifier(query: String): String? {
@@ -203,9 +236,29 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    private suspend fun searchByHashtag(hashtag: String) {
+        val filterJson = JSONObject().apply {
+            put("kinds", JSONArray().put(20))
+            put("#t", JSONArray().put(hashtag))
+            put("limit", 50)
+        }
+
+        nostrClient.subscribeRaw(SEARCH_HASHTAG_SUB, filterJson, null)
+
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            delay(500)
+            if (_uiState.value.hashtagPosts.isNotEmpty()) break
+        }
+
+        nostrClient.unsubscribe(SEARCH_HASHTAG_SUB)
+        _uiState.update { it.copy(isSearching = false) }
+    }
+
     override fun onCleared() {
         super.onCleared()
         nostrClient.unsubscribe(SEARCH_NAME_SUB)
+        nostrClient.unsubscribe(SEARCH_HASHTAG_SUB)
         _uiState.value.results.forEach { user ->
             nostrClient.unsubscribe("$SEARCH_DIRECT_PREFIX${user.pubkey}")
         }
@@ -215,5 +268,7 @@ class SearchViewModel @Inject constructor(
 data class SearchUiState(
     val searchQuery: String = "",
     val results: List<UserMetadata> = emptyList(),
-    val isSearching: Boolean = false
+    val isSearching: Boolean = false,
+    val isHashtagSearch: Boolean = false,
+    val hashtagPosts: List<PhotoPost> = emptyList()
 )
