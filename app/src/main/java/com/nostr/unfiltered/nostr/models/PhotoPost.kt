@@ -44,6 +44,9 @@ data class PhotoPost(
     val zapAmount: Long = 0,
     val isZapped: Boolean = false,
 
+    // Hashtags (from "t" tags)
+    val hashtags: List<String> = emptyList(),
+
     // For display
     val relativeTime: String = ""
 ) {

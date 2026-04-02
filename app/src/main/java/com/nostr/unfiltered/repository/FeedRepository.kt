@@ -444,6 +444,7 @@ class FeedRepository @Inject constructor(
         val isVideo = isVideoUrl(imageUrl)
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
+        val hashtags = tags.filter { it.size >= 2 && it[0] == "t" }.map { it[1] }
         val authorPubkey = event.author().toHex()
         val metadata = metadataCache.get(authorPubkey)
         val eventId = event.id().toHex()
@@ -467,7 +468,8 @@ class FeedRepository @Inject constructor(
             authorLud16 = metadata?.lud16,
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
             myReaction = myReactions[eventId],
-            isZapped = myZappedPosts.contains(eventId)
+            isZapped = myZappedPosts.contains(eventId),
+            hashtags = hashtags
         )
     }
 

@@ -562,6 +562,14 @@ class CreatePostViewModel @Inject constructor(
             })
         }
 
+        // Add hashtag tags
+        for (hashtag in extractHashtags(caption)) {
+            tags.put(JSONArray().apply {
+                put("t")
+                put(hashtag)
+            })
+        }
+
         return JSONObject().apply {
             put("kind", 20)
             put("pubkey", pubkey)
@@ -596,6 +604,11 @@ class CreatePostViewModel @Inject constructor(
             tags.add(Tag.parse(listOf("title", caption.take(100))))
         }
 
+        // Add hashtag tags
+        for (hashtag in extractHashtags(caption)) {
+            tags.add(Tag.parse(listOf("t", hashtag)))
+        }
+
         // Kind 20 = picture post (NIP-68)
         val kind20Event = EventBuilder(Kind(20u), caption, tags)
             .toEvent(keys)
@@ -614,6 +627,14 @@ class CreatePostViewModel @Inject constructor(
             .toEvent(keys)
 
         nostrClient.publish(kind1Event)
+    }
+
+    private fun extractHashtags(caption: String): List<String> {
+        val regex = Regex("""#(\w+)""")
+        return regex.findAll(caption)
+            .map { it.groupValues[1].lowercase() }
+            .distinct()
+            .toList()
     }
 
     companion object {
