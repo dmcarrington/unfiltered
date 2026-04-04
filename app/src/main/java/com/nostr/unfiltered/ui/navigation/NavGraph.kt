@@ -28,12 +28,14 @@ import com.nostr.unfiltered.ui.screens.profile.ProfileEditScreen
 import com.nostr.unfiltered.ui.screens.profile.ProfileScreen
 import com.nostr.unfiltered.ui.screens.search.SearchScreen
 import com.nostr.unfiltered.ui.screens.settings.SettingsScreen
+import com.nostr.unfiltered.ui.screens.trending.TrendingScreen
 import com.nostr.unfiltered.ui.screens.wallet.WalletScreen
 import com.nostr.unfiltered.viewmodel.AuthViewModel
 
 sealed class Screen(val route: String) {
     object Auth : Screen("auth")
     object Feed : Screen("feed")
+    object Trending : Screen("trending")
     object Profile : Screen("profile/{pubkey}") {
         fun createRoute(pubkey: String) = "profile/$pubkey"
     }
@@ -95,8 +97,22 @@ fun UnfilteredNavGraph(
                 onNotificationsClick = {
                     navController.navigate(Screen.Notifications.route)
                 },
+                onTrendingClick = {
+                    navController.navigate(Screen.Trending.route)
+                },
                 onHashtagClick = { hashtag ->
                     navController.navigate(Screen.HashtagSearch.createRoute(hashtag))
+                }
+            )
+        }
+
+        composable(Screen.Trending.route) {
+            TrendingScreen(
+                onPostClick = { postId ->
+                    // Navigate to post detail (future implementation)
+                },
+                onZapClick = { postId ->
+                    // Trigger zap flow (future implementation)
                 }
             )
         }

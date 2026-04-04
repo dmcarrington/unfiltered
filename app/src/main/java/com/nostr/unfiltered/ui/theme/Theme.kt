@@ -11,31 +11,31 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 private val UnfilteredColorScheme = darkColorScheme(
-    primary = BrightBlue,
-    onPrimary = DarkBlueBackground,
-    primaryContainer = DarkBlueSurface,
-    onPrimaryContainer = BrightBlueLight,
-    secondary = BrightPurple,
-    onSecondary = DarkBlueBackground,
-    secondaryContainer = DarkBlueCard,
-    onSecondaryContainer = BrightPurpleLight,
-    tertiary = BrightPurpleMuted,
-    onTertiary = Color.White,
-    background = DarkBlueBackground,
+    primary = WhitePrimary,
+    onPrimary = BlackBackground,
+    primaryContainer = GrayLight,
+    onPrimaryContainer = WhiteMuted,
+    secondary = WhiteDim,
+    onSecondary = BlackBackground,
+    secondaryContainer = GrayMedium,
+    onSecondaryContainer = WhiteMuted,
+    tertiary = WhiteMuted,
+    onTertiary = BlackBackground,
+    background = BlackBackground,
     onBackground = TextPrimary,
-    surface = DarkBlueSurface,
+    surface = BlackSurface,
     onSurface = TextPrimary,
-    surfaceVariant = DarkBlueCard,
+    surfaceVariant = BlackCard,
     onSurfaceVariant = TextSecondary,
     outline = TextMuted,
-    outlineVariant = DarkBlueCard,
+    outlineVariant = GrayDark,
     error = ErrorRed,
     errorContainer = ErrorContainer,
     onError = Color.White,
     onErrorContainer = Color.White,
     inverseSurface = TextPrimary,
-    inverseOnSurface = DarkBlueBackground,
-    inversePrimary = BrightBlueMuted
+    inverseOnSurface = BlackBackground,
+    inversePrimary = WhiteDim
 )
 
 @Composable

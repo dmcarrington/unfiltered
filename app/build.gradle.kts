@@ -145,6 +145,11 @@ dependencies {
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // Room database for zap tracking
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
+
     // Security for encrypted storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 

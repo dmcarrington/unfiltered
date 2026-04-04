@@ -90,6 +90,7 @@ fun FeedScreen(
     onSettingsClick: () -> Unit,
     onWalletClick: () -> Unit,
     onNotificationsClick: () -> Unit,
+    onTrendingClick: () -> Unit,
     onHashtagClick: (String) -> Unit = {},
     viewModel: FeedViewModel = hiltViewModel(),
     notificationsViewModel: NotificationsViewModel = hiltViewModel()
@@ -324,6 +325,13 @@ fun FeedScreen(
                                         .background(Color.Red, CircleShape)
                                 )
                             }
+                        }
+                    }
+
+                    // Trending (ZapBoost)
+                    IconButton(onClick = onTrendingClick) {
+                        Box {
+                            Icon(Icons.Default.Bolt, contentDescription = "Trending")
                         }
                     }
 
