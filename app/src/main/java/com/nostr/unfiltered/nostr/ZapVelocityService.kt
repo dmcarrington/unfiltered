@@ -10,20 +10,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import nostr.event.client.Event
-import nostr.event.client.Filter
-import nostr.event.client.RelayPool
+import kotlinx.coroutines.flow.collect
+import rust.nostr.protocol.Filter
 import java.time.Instant
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * ZapBoost: Real-time Lightning zap velocity tracking
  * 
- * Listens to NIP-57 zap receipts (kind 9735) on public relays,
+ * Listens to NIP-57 zap receipts (kind 9735) via NostrClient,
  * aggregates by e-tag (referenced post), and calculates rolling
  * velocity metrics (sats/hour, zaps/hour).
  */
-class ZapVelocityService(
-    private val relayPool: RelayPool,
+@Singleton
+class ZapVelocityService @Inject constructor(
+    private val nostrClient: NostrClient,
     private val database: ZapDatabase
 ) {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -39,7 +41,7 @@ class ZapVelocityService(
     
     /**
      * Start monitoring public zap receipts
-     * Subscribes to kind 9735 events on connected relays
+     * Subscribes to kind 9735 events via NostrClient
      */
     fun startMonitoring() {
         if (_isMonitoring.value) {
@@ -49,15 +51,22 @@ class ZapVelocityService(
         
         serviceScope.launch {
             try {
-                val oneHourAgo = Instant.now().minusSeconds(3600L)
+                val oneHourAgo = Instant.now().minusSeconds(3600L).epochSecond
                 
                 val filter = Filter(
-                    kinds = listOf(9735), // Zap receipt
+                    kinds = listOf(9735u), // Zap receipt
                     since = oneHourAgo
                 )
                 
-                relayPool.subscribe(listOf(filter)) { event ->
-                    processZapReceipt(event)
+                nostrClient.subscribe("zapboost", listOf(filter))
+                
+                // Listen to incoming events
+                launch {
+                    nostrClient.events.collect { nostrEvent ->
+                        if (nostrEvent.event.kind == 9735UL) {
+                            processZapReceipt(nostrEvent.event)
+                        }
+                    }
                 }
                 
                 _isMonitoring.value = true
@@ -78,15 +87,15 @@ class ZapVelocityService(
      */
     fun stopMonitoring() {
         _isMonitoring.value = false
-        relayPool.unsubscribeAll()
+        nostrClient.unsubscribe("zapboost")
         Log.i(TAG, "Stopped monitoring zap receipts")
     }
     
-    private fun processZapReceipt(event: Event) {
+    private fun processZapReceipt(event: rust.nostr.protocol.Event) {
         serviceScope.launch {
             try {
                 // Extract e-tag (the post being zapped)
-                val eTag = event.tags.find { it.identifier() != null }?.identifier()
+                val eTag = event.tags.find { it.size >= 2 && it[0] == "e" }?.get(1)
                     ?: return@launch
                 
                 // Extract sats amount from zap receipt
@@ -94,18 +103,18 @@ class ZapVelocityService(
                     ?: return@launch
                 
                 // Extract recipient (p-tag)
-                val recipientNpub = event.tags.find { it.code() == "p" }?.identifier()
+                val recipientNpub = event.tags.find { it.size >= 2 && it[0] == "p" }?.get(1)
                     ?: return@launch
                 
                 // Extract sender (pubkey of zap receipt event)
-                val senderNpub = event.pubKey
+                val senderNpub = event.pubkey
                 
                 val zapEntity = ZapEntity(
                     id = event.id,
                     postId = eTag,
                     recipientNpub = recipientNpub,
                     amountSats = amountSats,
-                    timestamp = event.createdAt,
+                    timestamp = Instant.ofEpochSecond(event.createdAt),
                     senderNpub = senderNpub
                 )
                 
@@ -118,15 +127,14 @@ class ZapVelocityService(
         }
     }
     
-    private fun extractSatsFromZap(event: Event): Long? {
-        // Try to extract amount from bolt11 invoice in zap receipt
-        // Or from the 'amount' tag if present
-        val amountTag = event.tags.find { it.code() == "amount" }?.identifier()
+    private fun extractSatsFromZap(event: rust.nostr.protocol.Event): Long? {
+        // Try to extract amount from 'amount' tag if present
+        val amountTag = event.tags.find { it.size >= 2 && it[0] == "amount" }?.get(1)
         if (amountTag != null) {
             return amountTag.toLongOrNull()
         }
         
-        // Fallback: parse bolt11 invoice (complex, may need external lib)
+        // Fallback: try to parse from bolt11 invoice in content
         // For now, return null if amount not in tags
         return null
     }
@@ -146,7 +154,7 @@ class ZapVelocityService(
     
     private suspend fun updateVelocityCache() {
         val now = Instant.now()
-        val oneHourAgo = now.minusSeconds(3600L)
+        val oneHourAgo = now.minusSeconds(3600L).epochSecond
         
         // Get all zaps in the last hour
         val recentZaps = database.getZapsSince(oneHourAgo)
@@ -213,7 +221,7 @@ data class ZapEntity(
     val recipientNpub: String,
     val amountSats: Long,
     val timestamp: Instant,
-    val senderNpub: String?
+    val senderNpub: String
 )
 
 /**

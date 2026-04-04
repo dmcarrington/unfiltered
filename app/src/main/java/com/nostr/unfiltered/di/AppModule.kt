@@ -3,6 +3,8 @@ package com.nostr.unfiltered.di
 import android.content.Context
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
+import com.nostr.unfiltered.nostr.ZapVelocityService
+import com.nostr.unfiltered.repository.ZapDatabase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -26,5 +28,22 @@ object AppModule {
     @Singleton
     fun provideNostrClient(): NostrClient {
         return NostrClient()
+    }
+
+    @Provides
+    @Singleton
+    fun provideZapDatabase(
+        @ApplicationContext context: Context
+    ): ZapDatabase {
+        return ZapDatabase.getDatabase(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideZapVelocityService(
+        nostrClient: NostrClient,
+        database: ZapDatabase
+    ): ZapVelocityService {
+        return ZapVelocityService(nostrClient, database)
     }
 }

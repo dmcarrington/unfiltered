@@ -15,7 +15,7 @@ import java.time.Instant
     version = 1,
     exportSchema = false
 )
-@TypeConverters(Converters::class)
+@TypeConverters(InstantConverter::class)
 abstract class ZapDatabase : RoomDatabase() {
     abstract fun zapDao(): ZapDao
     abstract fun velocityDao(): VelocityDao
@@ -49,13 +49,13 @@ interface ZapDao {
     suspend fun insertZap(zap: ZapEntity)
     
     @Query("SELECT * FROM zaps WHERE timestamp >= :since ORDER BY timestamp DESC")
-    suspend fun getZapsSince(since: Instant): List<ZapEntity>
+    suspend fun getZapsSince(since: Long): List<ZapEntity>
     
     @Query("SELECT * FROM zaps WHERE postId = :postId AND timestamp >= :since")
-    suspend fun getZapsForPost(postId: String, since: Instant): List<ZapEntity>
+    suspend fun getZapsForPost(postId: String, since: Long): List<ZapEntity>
     
     @Query("DELETE FROM zaps WHERE timestamp < :olderThan")
-    suspend fun deleteOldZaps(olderThan: Instant)
+    suspend fun deleteOldZaps(olderThan: Long)
 }
 
 /**
@@ -79,7 +79,7 @@ interface VelocityDao {
 /**
  * Type converters for Instant
  */
-class Converters {
+class InstantConverter {
     @TypeConverter
     fun fromInstant(instant: Instant): Long = instant.epochSecond
     
