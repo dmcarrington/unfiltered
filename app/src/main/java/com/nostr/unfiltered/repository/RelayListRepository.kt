@@ -127,19 +127,29 @@ class RelayListRepository @Inject constructor(
             ?: return PublishState.Failed("not signed in").also { _publishState.value = it }
 
         // Build tags per NIP-65: ["r", url] or ["r", url, "read"|"write"].
-        val tags = mutableListOf<Tag>()
+        // We track both the typed [Tag] form (for EventBuilder) and the
+        // raw List<String> form (for building the Amber unsigned-event
+        // JSON envelope — Tag.asJson() isn't available in this binding).
+        val typedTags = mutableListOf<Tag>()
+        val rawTags = mutableListOf<List<String>>()
         val readOnly = topology.readRelays - topology.writeRelays
         val writeOnly = topology.writeRelays - topology.readRelays
         val both = topology.readWriteRelays
 
         for (url in both.sorted()) {
-            tags.add(Tag.parse(listOf("r", url)))
+            val parts = listOf("r", url)
+            typedTags.add(Tag.parse(parts))
+            rawTags.add(parts)
         }
         for (url in readOnly.sorted()) {
-            tags.add(Tag.parse(listOf("r", url, "read")))
+            val parts = listOf("r", url, "read")
+            typedTags.add(Tag.parse(parts))
+            rawTags.add(parts)
         }
         for (url in writeOnly.sorted()) {
-            tags.add(Tag.parse(listOf("r", url, "write")))
+            val parts = listOf("r", url, "write")
+            typedTags.add(Tag.parse(parts))
+            rawTags.add(parts)
         }
 
         val keys = keyManager.getKeys()
@@ -147,12 +157,12 @@ class RelayListRepository @Inject constructor(
             // Amber path — caller must invoke Amber sign-event flow.
             return PublishState.NeedExternalSigner(
                 pubkeyHex = pubkeyHex,
-                unsignedEventJson = buildUnsignedEventJson(pubkeyHex, tags)
+                unsignedEventJson = buildUnsignedEventJson(pubkeyHex, rawTags)
             )
         }
 
         return try {
-            val event = EventBuilder(Kind(10002u), "", tags).toEvent(keys)
+            val event = EventBuilder(Kind(10002u), "", typedTags).toEvent(keys)
             nostrClient.publish(event)
             _topology.value = topology
             _hasPublishedOnce.value = true
@@ -186,12 +196,12 @@ class RelayListRepository @Inject constructor(
      * Mirrors the structure used by [EventBuilder] but stays as a String
      * (Amber wants the JSON envelope, not the typed Event).
      */
-    private fun buildUnsignedEventJson(pubkeyHex: String, tags: List<Tag>): String {
-        // rust-nostr Tag has asJson() that returns [["r","..."],...]
+    private fun buildUnsignedEventJson(pubkeyHex: String, rawTags: List<List<String>>): String {
         val tagsJson = JSONArray()
-        for (tag in tags) {
-            // Tag.asJson() returns a JSON array string like ["r","wss://..."]
-            tagsJson.put(JSONArray(tag.asJson()))
+        for (tagParts in rawTags) {
+            val tagJson = JSONArray()
+            for (part in tagParts) tagJson.put(part)
+            tagsJson.put(tagJson)
         }
         return JSONObject().apply {
             put("kind", 10002)

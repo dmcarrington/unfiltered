@@ -12,8 +12,8 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Looper
 import androidx.core.content.ContextCompat
-import androidx.core.util.Consumer
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.function.Consumer
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -101,7 +101,7 @@ class LocationProvider @Inject constructor(
                 provider,
                 cancellationSignal,
                 ContextCompat.getMainExecutor(context),
-                Consumer { location ->
+                Consumer<Location> { location ->
                     if (cont.isActive) cont.resume(location)
                 }
             )

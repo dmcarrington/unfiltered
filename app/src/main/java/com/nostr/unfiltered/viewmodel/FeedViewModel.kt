@@ -123,6 +123,8 @@ class FeedViewModel @Inject constructor(
         val sortedPosts = when (feedMode) {
             FeedMode.TRENDING -> filteredPosts.sortedByDescending { calculateTrendingScore(it) }
             FeedMode.FOLLOWING -> filteredPosts.sortedByDescending { it.createdAt }
+            FeedMode.NEARBY -> filteredPosts.sortedByDescending { it.createdAt }
+            FeedMode.NEARBY_FOLLOWING -> filteredPosts.sortedByDescending { it.createdAt }
         }
 
         FeedUiState(
