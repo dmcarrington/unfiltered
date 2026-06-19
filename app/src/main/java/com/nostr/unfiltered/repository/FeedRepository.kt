@@ -12,6 +12,7 @@ import com.nostr.unfiltered.nostr.models.ImageDimensions
 import com.nostr.unfiltered.nostr.models.MediaItem
 import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
+import com.nostr.unfiltered.util.Geohash
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -522,6 +523,8 @@ class FeedRepository @Inject constructor(
 
         val title = tags.find { it.size >= 2 && it[0] == "title" }?.get(1)
         val hashtags = tags.filter { it.size >= 2 && it[0] == "t" }.map { it[1] }
+        val geohash = tags.find { it.size >= 2 && it[0] == "g" }?.get(1)
+            ?.takeIf { Geohash.isValid(it) }
         val authorPubkey = event.author().toHex()
         val metadata = metadataCache.get(authorPubkey)
         val eventId = event.id().toHex()
@@ -546,7 +549,8 @@ class FeedRepository @Inject constructor(
             relativeTime = formatRelativeTime(event.createdAt().asSecs().toLong()),
             myReaction = myReactions[eventId],
             isZapped = myZappedPosts.contains(eventId),
-            hashtags = hashtags
+            hashtags = hashtags,
+            geohash = geohash
         )
     }
 
@@ -770,6 +774,65 @@ class FeedRepository @Inject constructor(
 
         _isLoading.value = false
         return true
+    }
+
+    /**
+     * Subscribe to a Nearby feed: kind 20 events whose `g` tag matches any
+     * of the supplied [geohashes] (typically the user's cell + 8 neighbours).
+     *
+     * If [followsOnly] is true, also restricts to authors in the user's
+     * follow list (kind 3). For "Nearby ∩ Following" use case.
+     *
+     * Filter is sent as raw JSON because rust-nostr's typed `Filter` API
+     * exposes `#t`, `#e`, `#p` but not `#g`.
+     *
+     * Returns true if a subscription was opened.
+     */
+    fun subscribeToNearbyFeed(
+        geohashes: List<String>,
+        followsOnly: Boolean = false
+    ): Boolean {
+        if (geohashes.isEmpty()) return false
+
+        // Drop any current feed subs.
+        nostrClient.unsubscribe("feed")
+        nostrClient.unsubscribe("feed_follows")
+        nostrClient.unsubscribe("feed_nearby")
+
+        _isLoading.value = true
+
+        val authors = if (followsOnly) {
+            _followList.value.mapNotNull { pubkey ->
+                runCatching { PublicKey.fromHex(pubkey) }.getOrNull()
+            }
+        } else null
+
+        val filterJson = JSONObject().apply {
+            put("kinds", JSONArray().apply { put(20) })
+            put("#g", JSONArray(geohashes))
+            put("limit", 100)
+            if (authors != null && authors.isNotEmpty()) {
+                put("authors", JSONArray(authors.map { it.toHex() }))
+            }
+        }
+
+        val subId = if (followsOnly) "feed_nearby_follows" else "feed_nearby"
+        nostrClient.subscribeRaw(subId, filterJson)
+
+        _isLoading.value = false
+        return true
+    }
+
+    /**
+     * (Reserved for future use) Open the per-post interaction subs
+     * (reactions / zaps / comments) for whatever posts are currently
+     * in the cache. Currently we leave it to the reactions-handler
+     * which opens event-id-targeted subs as posts arrive (see lines
+     * around the post_reactions subscription below).
+     */
+    private fun subscribeToPostInteractions() {
+        // No-op — kept as a hook for future "global reactions" fan-in
+        // (e.g. a "all reactions on visible posts" view).
     }
 
     fun fetchUserMetadata(pubkey: String) {

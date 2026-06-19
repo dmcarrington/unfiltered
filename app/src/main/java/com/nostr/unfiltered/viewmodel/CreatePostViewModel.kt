@@ -16,6 +16,8 @@ import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.ui.screens.createpost.ImageFilter
 import com.nostr.unfiltered.ui.screens.createpost.applyFilter
+import com.nostr.unfiltered.util.Geohash
+import com.nostr.unfiltered.util.LocationProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,7 +36,8 @@ import javax.inject.Inject
 class CreatePostViewModel @Inject constructor(
     private val blossomClient: BlossomClient,
     private val nostrClient: NostrClient,
-    private val keyManager: KeyManager
+    private val keyManager: KeyManager,
+    private val locationProvider: LocationProvider
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CreatePostUiState())
@@ -48,6 +51,7 @@ class CreatePostViewModel @Inject constructor(
     private var pendingContext: Context? = null
     private var pendingPostUnsignedEvent: String? = null
     private var pendingKind1UnsignedEvent: String? = null
+    private var pendingGeohash: String? = null
 
     data class UploadedMedia(
         val url: String,
@@ -99,14 +103,41 @@ class CreatePostViewModel @Inject constructor(
         _uiState.update { it.copy(selectedFilter = filter) }
     }
 
+    /**
+     * Toggle whether new posts should include a coarse `g` tag (geohash).
+     *
+     * When on, [createPost] will fetch a single one-shot location fix at
+     * publish time and embed a geohash (precision 5, ~5 km) on the kind 20
+     * event. The exact GPS coordinates are NEVER published.
+     *
+     * Sticky — stays on across the session until the user turns it off
+     * (separate per-post UI is out of scope for this PR).
+     */
+    fun setIncludeLocation(include: Boolean) {
+        _uiState.update { it.copy(includeLocation = include) }
+    }
+
     fun createPost(context: Context) {
         val media = _uiState.value.selectedMedia
         if (media.isEmpty()) return
         val selectedFilter = _uiState.value.selectedFilter
+        val includeLocation = _uiState.value.includeLocation
 
         _uiState.update { it.copy(isUploading = true, error = null) }
 
         viewModelScope.launch {
+            // Compute geohash (one-shot, opt-in). Failure is silent — we
+            // post without a `g` tag rather than blocking the user.
+            val geohash = if (includeLocation) {
+                val loc = locationProvider.getCurrentLocation()
+                if (loc != null) {
+                    runCatching {
+                        Geohash.encode(loc.latitude, loc.longitude, precision = 5)
+                    }.getOrNull()
+                } else null
+            } else null
+            pendingGeohash = geohash
+
             try {
                 if (keyManager.isAmberConnected()) {
                     // Amber flow: upload all images first, then sign event
@@ -183,7 +214,8 @@ class CreatePostViewModel @Inject constructor(
                     publishMultiPhotoPost(
                         uploads = uploadResults,
                         caption = _uiState.value.caption,
-                        altText = _uiState.value.altText
+                        altText = _uiState.value.altText,
+                        geohash = geohash
                     )
 
                     _uiState.update {
@@ -273,7 +305,8 @@ class CreatePostViewModel @Inject constructor(
                     val unsignedPostEvent = createUnsignedMultiPhotoPostEvent(
                         uploads = currentResults,
                         caption = _uiState.value.caption,
-                        altText = _uiState.value.altText
+                        altText = _uiState.value.altText,
+                        geohash = pendingGeohash
                     )
                     pendingPostUnsignedEvent = unsignedPostEvent
                     val intent = keyManager.createAmberSignEventIntent(
@@ -525,6 +558,7 @@ class CreatePostViewModel @Inject constructor(
         pendingContext = null
         pendingPostUnsignedEvent = null
         pendingKind1UnsignedEvent = null
+        pendingGeohash = null
     }
 
     /**
@@ -533,7 +567,8 @@ class CreatePostViewModel @Inject constructor(
     private fun createUnsignedMultiPhotoPostEvent(
         uploads: List<UploadedMedia>,
         caption: String,
-        altText: String
+        altText: String,
+        geohash: String? = null
     ): String {
         val pubkey = keyManager.getPublicKeyHex() ?: ""
         val createdAt = System.currentTimeMillis() / 1000
@@ -570,6 +605,15 @@ class CreatePostViewModel @Inject constructor(
             })
         }
 
+        // Coarse geohash (NIP-52). Precision 5 ≈ 5 km cell.
+        // Only include if the user opted in AND we got a fix.
+        if (!geohash.isNullOrEmpty()) {
+            tags.put(JSONArray().apply {
+                put("g")
+                put(geohash)
+            })
+        }
+
         return JSONObject().apply {
             put("kind", 20)
             put("pubkey", pubkey)
@@ -582,7 +626,8 @@ class CreatePostViewModel @Inject constructor(
     private fun publishMultiPhotoPost(
         uploads: List<UploadedMedia>,
         caption: String,
-        altText: String
+        altText: String,
+        geohash: String? = null
     ) {
         val keys = keyManager.getKeys() ?: return
 
@@ -609,6 +654,12 @@ class CreatePostViewModel @Inject constructor(
             tags.add(Tag.parse(listOf("t", hashtag)))
         }
 
+        // Coarse geohash (NIP-52 / nearby-feed). Single `g` tag, precision 5.
+        // The exact GPS is NEVER included — only the geohash cell identifier.
+        if (!geohash.isNullOrEmpty()) {
+            tags.add(Tag.parse(listOf("g", geohash)))
+        }
+
         // Kind 20 = picture post (NIP-68)
         val kind20Event = EventBuilder(Kind(20u), caption, tags)
             .toEvent(keys)
@@ -623,6 +674,9 @@ class CreatePostViewModel @Inject constructor(
             urlBlock
         }
 
+        // Kind 1 doesn't get the geohash — kind 1 is our legacy
+        // cross-client compatibility echo and clients on other Nostr
+        // apps don't filter by g-tag on kind 1. The "real" post is kind 20.
         val kind1Event = EventBuilder(Kind(1u), kind1Content, emptyList())
             .toEvent(keys)
 
@@ -792,6 +846,7 @@ data class CreatePostUiState(
     val caption: String = "",
     val altText: String = "",
     val selectedFilter: ImageFilter = ImageFilter.NONE,
+    val includeLocation: Boolean = false,
     val isUploading: Boolean = false,
     val uploadProgress: String = "",
     val isSuccess: Boolean = false,

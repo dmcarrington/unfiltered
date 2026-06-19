@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Coarse location only is enough for the Nearby feed (geohash precision 5
+         is ~5 km). We do NOT request ACCESS_FINE_LOCATION unless the user
+         opts into a higher precision in a future release. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Query for Amber signer app -->

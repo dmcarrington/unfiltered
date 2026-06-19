@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.nostr.unfiltered.nostr.AmberCallbackResult
 import com.nostr.unfiltered.nostr.KeyManager
 import com.nostr.unfiltered.nostr.NostrClient
+import com.nostr.unfiltered.repository.RelayListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +19,8 @@ import javax.inject.Inject
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val keyManager: KeyManager,
-    private val nostrClient: NostrClient
+    private val nostrClient: NostrClient,
+    private val relayListRepository: RelayListRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AuthUiState())
@@ -221,6 +223,15 @@ class AuthViewModel @Inject constructor(
     private fun connectToRelays() {
         viewModelScope.launch {
             nostrClient.connect()
+            // Load (and publish, if missing) the user's NIP-65 relay list
+            // so future writes respect their declared read/write split.
+            relayListRepository.loadCurrent(timeoutMs = 4000L)
+            relayListRepository.ensurePublishedDefault()
+            // Once we know the topology, reconnect against it.
+            val topology = relayListRepository.topology.value
+            if (!topology.isEmpty()) {
+                nostrClient.connectWithTopology(topology)
+            }
         }
     }
 }

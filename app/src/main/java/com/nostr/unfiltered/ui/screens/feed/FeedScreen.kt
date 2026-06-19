@@ -1,9 +1,12 @@
 package com.nostr.unfiltered.ui.screens.feed
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -161,6 +164,40 @@ fun FeedScreen(
         viewModel.refreshZapStatus()
     }
 
+    // Pending Nearby mode the user picked — we hold onto it across the
+    // permission dialog so we can re-route after the user grants/denies.
+    var pendingNearbyMode by remember { mutableStateOf<FeedMode?>(null) }
+
+    // Location permission launcher for Nearby mode.
+    // On grant: route to the requested Nearby mode.
+    // On deny: stay on the current feed and Toast the user.
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val mode = pendingNearbyMode
+        pendingNearbyMode = null
+        if (mode != null) {
+            if (granted) {
+                viewModel.setFeedMode(mode)
+            } else {
+                Toast.makeText(
+                    context,
+                    "Location permission denied. Staying on the current feed.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    // Surface transient Nearby errors (e.g. fix timeout) from the viewmodel.
+    val nearbyError by viewModel.nearbyError.collectAsState()
+    LaunchedEffect(nearbyError) {
+        nearbyError?.let { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            viewModel.clearNearbyError()
+        }
+    }
+
     // Mark feed as read when screen first displays
     LaunchedEffect(Unit) {
         viewModel.markFeedAsRead()
@@ -244,6 +281,8 @@ fun FeedScreen(
                                     text = when (uiState.feedMode) {
                                         FeedMode.FOLLOWING -> "Following"
                                         FeedMode.TRENDING -> "Trending"
+                                        FeedMode.NEARBY -> "Nearby"
+                                        FeedMode.NEARBY_FOLLOWING -> "Nearby \u2229 Following"
                                     },
                                     style = MaterialTheme.typography.labelLarge
                                 )
@@ -271,6 +310,41 @@ fun FeedScreen(
                                         viewModel.setFeedMode(FeedMode.TRENDING)
                                         dropdownExpanded = false
                                     }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Nearby") },
+                                    onClick = {
+                                        val granted = ContextCompat.checkSelfPermission(
+                                            context, Manifest.permission.ACCESS_COARSE_LOCATION
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (granted) {
+                                            viewModel.setFeedMode(FeedMode.NEARBY)
+                                        } else {
+                                            pendingNearbyMode = FeedMode.NEARBY
+                                            locationPermissionLauncher.launch(
+                                                Manifest.permission.ACCESS_COARSE_LOCATION
+                                            )
+                                        }
+                                        dropdownExpanded = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Nearby ∩ Following") },
+                                    onClick = {
+                                        val granted = ContextCompat.checkSelfPermission(
+                                            context, Manifest.permission.ACCESS_COARSE_LOCATION
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (granted) {
+                                            viewModel.setFeedMode(FeedMode.NEARBY_FOLLOWING)
+                                        } else {
+                                            pendingNearbyMode = FeedMode.NEARBY_FOLLOWING
+                                            locationPermissionLauncher.launch(
+                                                Manifest.permission.ACCESS_COARSE_LOCATION
+                                            )
+                                        }
+                                        dropdownExpanded = false
+                                    },
+                                    enabled = uiState.hasFollows
                                 )
                             }
                         }
@@ -634,19 +708,23 @@ private fun EmptyFeedState(feedMode: FeedMode = FeedMode.TRENDING) {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = if (feedMode == FeedMode.FOLLOWING)
-                    "No posts from people you follow"
-                else
-                    "No photos yet",
+                text = when (feedMode) {
+                    FeedMode.FOLLOWING -> "No posts from people you follow"
+                    FeedMode.TRENDING -> "No photos yet"
+                    FeedMode.NEARBY -> "Nothing posted nearby yet"
+                    FeedMode.NEARBY_FOLLOWING -> "No nearby posts from people you follow"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = if (feedMode == FeedMode.FOLLOWING)
-                    "Follow more users to see their posts here!"
-                else
-                    "Photos from the Nostr network will appear here.",
+                text = when (feedMode) {
+                    FeedMode.FOLLOWING -> "Follow more users to see their posts here!"
+                    FeedMode.TRENDING -> "Photos from the Nostr network will appear here."
+                    FeedMode.NEARBY -> "Posts within ~5 km of you with a location tag will show up here. Be the first!"
+                    FeedMode.NEARBY_FOLLOWING -> "When someone you follow posts nearby, it shows up here."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.secondary,
                 textAlign = TextAlign.Center

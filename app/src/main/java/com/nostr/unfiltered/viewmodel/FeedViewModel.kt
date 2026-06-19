@@ -11,6 +11,9 @@ import com.nostr.unfiltered.nostr.models.PhotoPost
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import com.nostr.unfiltered.repository.MuteListRepository
+import com.nostr.unfiltered.repository.RelayListRepository
+import com.nostr.unfiltered.util.Geohash
+import com.nostr.unfiltered.util.LocationProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +29,9 @@ import javax.inject.Inject
 
 enum class FeedMode {
     FOLLOWING,
-    TRENDING
+    TRENDING,
+    NEARBY,
+    NEARBY_FOLLOWING
 }
 
 @HiltViewModel
@@ -36,7 +41,9 @@ class FeedViewModel @Inject constructor(
     private val feedRepository: FeedRepository,
     private val zapManager: ZapManager,
     private val muteListRepository: MuteListRepository,
-    private val metadataCache: MetadataCache
+    private val metadataCache: MetadataCache,
+    private val locationProvider: LocationProvider,
+    private val relayListRepository: RelayListRepository
 ) : ViewModel() {
 
     val connectionState: StateFlow<NostrClient.ConnectionState> = nostrClient.connectionState
@@ -143,6 +150,23 @@ class FeedViewModel @Inject constructor(
         setupNewPostDetection()
         startNewPostsPolling()
         observeCurrentUserPicture()
+        bootstrapRelayList()
+    }
+
+    /**
+     * Load the user's NIP-65 relay list on startup, publish the default if
+     * none exists, then reconnect against the loaded topology so writes
+     * honour the read/write split.
+     */
+    private fun bootstrapRelayList() {
+        viewModelScope.launch {
+            relayListRepository.loadCurrent(timeoutMs = 4000L)
+            relayListRepository.ensurePublishedDefault()
+            val topology = relayListRepository.topology.value
+            if (!topology.isEmpty()) {
+                nostrClient.connectWithTopology(topology)
+            }
+        }
     }
 
     private fun observeCurrentUserPicture() {
@@ -215,8 +239,55 @@ class FeedViewModel @Inject constructor(
                     }
                 }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
+                FeedMode.NEARBY -> switchToNearby(followsOnly = false)
+                FeedMode.NEARBY_FOLLOWING -> switchToNearby(followsOnly = true)
             }
         }
+    }
+
+    /**
+     * Switch into a Nearby feed. Fetches one location fix (no background
+     * tracking), computes the geohash + 8 neighbours, and subscribes.
+     *
+     * If location is unavailable / denied / times out, falls back to the
+     * global trending feed so the user isn't stranded on a blank screen.
+     */
+    private suspend fun switchToNearby(followsOnly: Boolean) {
+        val loc = locationProvider.getCurrentLocation(timeoutMs = 6000L)
+        if (loc == null) {
+            _nearbyError.value = "Location unavailable. Showing trending instead."
+            _feedMode.value = FeedMode.TRENDING
+            feedRepository.subscribeToFeed()
+            return
+        }
+        val centre = runCatching {
+            Geohash.encode(loc.latitude, loc.longitude, precision = 5)
+        }.getOrNull()
+        if (centre == null) {
+            _nearbyError.value = "Could not compute location. Showing trending instead."
+            _feedMode.value = FeedMode.TRENDING
+            feedRepository.subscribeToFeed()
+            return
+        }
+        val hashes = Geohash.neighboursAndSelf(centre)
+        if (!feedRepository.subscribeToNearbyFeed(hashes, followsOnly = followsOnly)) {
+            _nearbyError.value = "Could not open Nearby feed."
+            _feedMode.value = FeedMode.TRENDING
+            feedRepository.subscribeToFeed()
+            return
+        }
+        _nearbyError.value = null
+    }
+
+    /**
+     * Transient error message for the Nearby feed (e.g. "no location").
+     * The screen surfaces this once, then the user can dismiss or retry.
+     */
+    private val _nearbyError = MutableStateFlow<String?>(null)
+    val nearbyError: StateFlow<String?> = _nearbyError.asStateFlow()
+
+    fun clearNearbyError() {
+        _nearbyError.value = null
     }
 
     private fun checkZapAvailability() {
@@ -291,6 +362,8 @@ class FeedViewModel @Inject constructor(
                     }
                 }
                 FeedMode.TRENDING -> feedRepository.subscribeToFeed()
+                FeedMode.NEARBY -> switchToNearby(followsOnly = false)
+                FeedMode.NEARBY_FOLLOWING -> switchToNearby(followsOnly = true)
             }
             _isRefreshing.value = false
         }

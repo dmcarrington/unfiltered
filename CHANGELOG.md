@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+- **NIP-65 Relay List (kind 10002)**: The app now publishes, parses and honours a NIP-65 relay list. Posts are published only to the user's declared *write* relays (outbox pattern). A new "Relay List (NIP-65)" section in Settings shows the current read/write topology and lets you toggle read/write per relay. The first time you sign in, the app publishes a default list (Damus, Primal, nos.lol) so you have somewhere to write.
+- **Geohash Nearby feed**: Each post can now carry a coarse `g` tag (NIP-52, geohash precision 5, ~5 km cell). The "Nearby" and "Nearby ∩ Following" feed modes in the feed dropdown surface posts whose `g` tag matches your geohash (centre + 8 neighbours). Location permission is coarse-only (no precise GPS ever published).
+- **Include rough location toggle in Create Post**: Per-post opt-in switch in the new-post sheet that adds the `g` tag. Off by default — users must explicitly enable it.
+
+### Bug Fixes
+- **Backward-compatible publish behaviour**: Events are no longer broadcast to every connected relay — they go only to relays in the user's NIP-65 write set. For first-time users with no kind 10002 yet, the default 3 relays are used as both read and write so behaviour matches the previous version.
+
+### Under the Hood
+- **Topology-aware NostrClient**: `NostrClient` now tracks a `RelayTopology` and only sends publishes to relays marked as write-capable. WebSockets are still opened to all relays in the topology (for reads); only the publish path is restricted.
+- **LocationProvider**: New one-shot `LocationManager` wrapper (no Play Services dependency). Fetches a single fix per Nearby-feed open, no background tracking.
+- **Geohash utility**: New `Geohash.kt` with encode/decode/neighbours + comprehensive unit tests using canonical Niemeyer geohash vectors (Wikipedia, Rosetta Code).
+
 ## [1.0.12] - 2026-04-02
 
 ### New Features

@@ -534,6 +534,88 @@ private fun SettingsTabContent(
                 }
             }
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // NIP-65 Relay List (kind 10002) Section
+            Text(
+                text = "Relay List (NIP-65)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = if (uiState.relayHasPublishedOnce)
+                    "Published as kind 10002. Other clients honour this list for your outbox."
+                else
+                    "Not published yet. Your posts currently go to every connected relay.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    val topology = uiState.relayTopology
+                    if (topology.isEmpty()) {
+                        Text(
+                            text = "No relay list loaded yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    } else {
+                        val all = (topology.readRelays + topology.writeRelays).sorted()
+                        all.forEachIndexed { index, url ->
+                            val isRead = topology.isRead(url)
+                            val isWrite = topology.isWrite(url)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = url.removePrefix("wss://"),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = {
+                                        viewModel.setRelayReadWrite(url, read = !isRead, write = isWrite)
+                                    },
+                                    enabled = isWrite  // can't disable writes only via this button
+                                ) {
+                                    Text(if (isRead) "Read ✓" else "Read")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        viewModel.setRelayReadWrite(url, read = isRead, write = !isWrite)
+                                    }
+                                ) {
+                                    Text(if (isWrite) "Write ✓" else "Write")
+                                }
+                            }
+                            if (index < all.size - 1) {
+                                HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextButton(
+                        onClick = { viewModel.publishRelayListFromConnected() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Save & publish current connection list")
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // Wallet Connect Section

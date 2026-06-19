@@ -47,6 +47,10 @@ data class PhotoPost(
     // Hashtags (from "t" tags)
     val hashtags: List<String> = emptyList(),
 
+    // Coarse geohash (from "g" tag, NIP-52). Null if the post has no
+    // location tag.
+    val geohash: String? = null,
+
     // Comments
     val commentCount: Int = 0,
 
