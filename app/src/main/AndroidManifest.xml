@@ -8,6 +8,12 @@
          opts into a higher precision in a future release. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Location is optional: requesting ACCESS_COARSE_LOCATION otherwise implies
+         a REQUIRED android.hardware.location feature, which silently blocks install
+         on devices without location hardware (emulators, some Chromebooks/tablets). -->
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <!-- Query for Amber signer app -->
     <queries>
