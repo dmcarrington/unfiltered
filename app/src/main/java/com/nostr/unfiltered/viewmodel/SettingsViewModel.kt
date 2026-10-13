@@ -7,9 +7,11 @@ import com.nostr.unfiltered.nostr.NostrClient
 import com.nostr.unfiltered.nostr.NwcService
 import com.nostr.unfiltered.nostr.SearchService
 import com.nostr.unfiltered.nostr.models.PhotoPost
+import com.nostr.unfiltered.nostr.models.RelayTopology
 import com.nostr.unfiltered.nostr.models.UserMetadata
 import com.nostr.unfiltered.repository.FeedRepository
 import com.nostr.unfiltered.repository.MuteListRepository
+import com.nostr.unfiltered.repository.RelayListRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,11 +28,18 @@ class SettingsViewModel @Inject constructor(
     private val nwcService: NwcService,
     private val feedRepository: FeedRepository,
     private val muteListRepository: MuteListRepository,
-    private val searchService: SearchService
+    private val searchService: SearchService,
+    private val relayListRepository: RelayListRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    val relayTopology: StateFlow<RelayTopology> = relayListRepository.topology
+    val relayListPublishState: StateFlow<RelayListRepository.PublishState> =
+        relayListRepository.publishState
+    val relayListHasPublishedOnce: StateFlow<Boolean> =
+        relayListRepository.hasPublishedOnce
 
     init {
         loadSettings()
@@ -38,6 +47,94 @@ class SettingsViewModel @Inject constructor(
         loadNwcStatus()
         observeFollowList()
         observeMuteList()
+        observeRelayTopology()
+        loadRelayList()
+    }
+
+    /**
+     * Load the user's NIP-65 (kind 10002) relay list. Best-effort: if it
+     * can't be fetched (no relay response, no kind 10002 on the relay),
+     * the topology stays empty and the user can publish the default.
+     */
+    private fun loadRelayList() {
+        viewModelScope.launch {
+            relayListRepository.loadCurrent(timeoutMs = 4000L)
+            // If no kind 10002 exists yet, publish the default so we have
+            // somewhere to write.
+            relayListRepository.ensurePublishedDefault()
+        }
+    }
+
+    private fun observeRelayTopology() {
+        viewModelScope.launch {
+            relayListRepository.topology.collect { topology ->
+                _uiState.update { it.copy(relayTopology = topology) }
+            }
+        }
+        viewModelScope.launch {
+            relayListRepository.publishState.collect { state ->
+                _uiState.update { it.copy(relayPublishState = state) }
+            }
+        }
+        viewModelScope.launch {
+            relayListRepository.hasPublishedOnce.collect { has ->
+                _uiState.update { it.copy(relayHasPublishedOnce = has) }
+            }
+        }
+    }
+
+    /**
+     * Build a topology from the currently connected relays and publish it
+     * as kind 10002. The user can also use [setRelayTopologyReadWrite] /
+     * [removeRelayFromTopology] for finer control.
+     */
+    fun publishRelayListFromConnected() {
+        val connected = nostrClient.getConnectedRelays()
+        if (connected.isEmpty()) return
+        relayListRepository.publish(RelayTopology.fromRelays(connected))
+    }
+
+    /**
+     * Toggle whether a given relay is in the read set, write set, both,
+     * or neither. Publishes the updated topology.
+     */
+    fun setRelayReadWrite(url: String, read: Boolean, write: Boolean) {
+        val norm = RelayTopology.normalise(url)
+        val current = relayListRepository.topology.value
+        val next = RelayTopology(
+            readRelays = if (read) current.readRelays + norm else current.readRelays - norm,
+            writeRelays = if (write) current.writeRelays + norm else current.writeRelays - norm
+        )
+        if (next.isEmpty()) {
+            _uiState.update { it.copy(relayPublishState = RelayListRepository.PublishState.Failed("need at least one relay")) }
+            return
+        }
+        relayListRepository.publish(next)
+    }
+
+    /**
+     * Add a brand-new relay to both read+write and publish.
+     */
+    fun addRelayToTopology(url: String, read: Boolean = true, write: Boolean = true) {
+        val norm = RelayTopology.normalise(url)
+        val current = relayListRepository.topology.value
+        val next = RelayTopology(
+            readRelays = if (read) current.readRelays + norm else current.readRelays,
+            writeRelays = if (write) current.writeRelays + norm else current.writeRelays
+        )
+        if (next.readRelays.isEmpty() && next.writeRelays.isEmpty()) return
+        relayListRepository.publish(next)
+    }
+
+    fun removeRelayFromTopology(url: String) {
+        val norm = RelayTopology.normalise(url)
+        val current = relayListRepository.topology.value
+        val next = RelayTopology(
+            readRelays = current.readRelays - norm,
+            writeRelays = current.writeRelays - norm
+        )
+        if (next.isEmpty()) return
+        relayListRepository.publish(next)
     }
 
     private fun loadNwcStatus() {
@@ -203,7 +300,18 @@ class SettingsViewModel @Inject constructor(
         val normalizedUrl = normalizeRelayUrl(url)
         if (normalizedUrl.isNotEmpty()) {
             viewModelScope.launch {
-                nostrClient.connect(listOf(normalizedUrl))
+                // Merge the new relay into the existing topology rather than
+                // clobbering it (NIP-65 aware).
+                val current = nostrClient.getCurrentTopology()
+                val merged = if (current.isEmpty()) {
+                    RelayTopology.fromRelays(listOf(normalizedUrl))
+                } else {
+                    RelayTopology(
+                        readRelays = current.readRelays + normalizedUrl,
+                        writeRelays = current.writeRelays + normalizedUrl
+                    )
+                }
+                nostrClient.connectWithTopology(merged)
             }
         }
     }
@@ -217,8 +325,8 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             // First remove the existing failed connection
             nostrClient.disconnectRelay(normalizedUrl)
-            // Then reconnect
-            nostrClient.connect(listOf(normalizedUrl))
+            // Reconnect against current topology (preserves write flags etc.)
+            nostrClient.reconnect()
         }
     }
 
@@ -296,7 +404,11 @@ data class SettingsUiState(
     val isLoadingFollowList: Boolean = false,
     val isLoadingMuteList: Boolean = false,
     val myPosts: List<PhotoPost> = emptyList(),
-    val isLoadingMyPosts: Boolean = false
+    val isLoadingMyPosts: Boolean = false,
+    // NIP-65 relay list state
+    val relayTopology: RelayTopology = RelayTopology.EMPTY,
+    val relayPublishState: RelayListRepository.PublishState = RelayListRepository.PublishState.Idle,
+    val relayHasPublishedOnce: Boolean = false
 )
 
 data class RelayInfo(

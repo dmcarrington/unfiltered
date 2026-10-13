@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -332,6 +333,36 @@ fun CreatePostScreen(
                 maxLines = 4,
                 enabled = !uiState.isUploading
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Coarse location toggle (opt-in geohash).
+            // When on, [createPost] fetches a one-shot location fix at publish
+            // time and embeds a geohash (precision 5, ~5 km cell) on the kind 20
+            // event. The exact GPS coordinates are NEVER published.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Switch(
+                    checked = uiState.includeLocation,
+                    onCheckedChange = { viewModel.setIncludeLocation(it) },
+                    enabled = !uiState.isUploading
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Include rough location",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Adds a ~5 km geohash tag so the post can appear on Nearby feeds. Exact GPS is never published.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 

@@ -15,6 +15,7 @@ supported_nips:
   - "25"
   - "47"
   - "57"
+  - "65"
   - "68"
   - "94"
 release_notes: ./CHANGELOG.md
