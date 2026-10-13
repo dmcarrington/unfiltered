@@ -1,5 +1,6 @@
 package com.nostr.unfiltered.nostr
 
+import com.nostr.unfiltered.nostr.models.RelayTopology
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -86,12 +87,38 @@ class NostrClient @Inject constructor() {
     )
 
     /**
-     * Connect to a list of relays
+     * The currently configured topology. Defaults to [RelayTopology.EMPTY] so
+     * that calls to [publish] before [connect] are no-ops rather than
+     * broadcasting to every connected relay.
+     */
+    @Volatile
+    private var currentTopology: RelayTopology = RelayTopology.EMPTY
+
+    /**
+     * Connect to a list of relays. The relays passed are used as both read
+     * and write relays (legacy behaviour preserved). For NIP-65-aware
+     * routing, prefer [connectWithTopology].
      */
     suspend fun connect(relayUrls: List<String> = defaultRelays) {
+        val topo = RelayTopology.fromRelays(relayUrls)
+        connectWithTopology(topo)
+    }
+
+    /**
+     * Connect using a NIP-65 [RelayTopology]. WebSockets are opened to the
+     * union of read and write relays; per-connection write capability is
+     * tracked so [publish] only sends to write relays.
+     *
+     * If [topology] is empty, falls back to [defaultRelays] as both read and
+     * write so the app still works for first-time users with no kind 10002.
+     */
+    suspend fun connectWithTopology(topology: RelayTopology) {
+        val effective = if (topology.isEmpty()) RelayTopology.DEFAULT else topology
+        currentTopology = effective
+
         _connectionState.value = ConnectionState.Connecting
 
-        relayUrls.forEach { url ->
+        effective.allRelays.forEach { url ->
             if (!relayConnections.containsKey(url)) {
                 connectToRelay(url)
             }
@@ -117,10 +144,13 @@ class NostrClient @Inject constructor() {
     }
 
     /**
-     * Connect to a single relay
+     * Connect to a single relay. The connection inherits the write flag
+     * from [currentTopology] — read-only relays still get connected so
+     * reads work, but [publish] skips them.
      */
     private fun connectToRelay(url: String) {
         val normalizedUrl = normalizeRelayUrl(url)
+        val canWrite = currentTopology.isWrite(normalizedUrl)
 
         val request = Request.Builder()
             .url(normalizedUrl)
@@ -158,16 +188,23 @@ class NostrClient @Inject constructor() {
         }
 
         val webSocket = httpClient.newWebSocket(request, listener)
-        relayConnections[normalizedUrl] = RelayConnection(normalizedUrl, webSocket)
+        relayConnections[normalizedUrl] = RelayConnection(normalizedUrl, webSocket, canWrite)
         updateRelayStatus(normalizedUrl, RelayStatus.Connecting)
     }
 
     /**
-     * Reconnect to any relays that are disconnected or in error state
+     * Reconnect to any relays that are disconnected or in error state.
+     * Reconnects against [currentTopology] (or [defaultRelays] if no
+     * topology has been set). Preserves the existing topology; only opens
+     * WebSockets for relays not currently connected.
      */
-    suspend fun reconnect(relayUrls: List<String> = defaultRelays) {
+    suspend fun reconnect(relayUrls: List<String>? = null) {
+        val targets = relayUrls
+            ?: currentTopology.allRelays.takeIf { it.isNotEmpty() }
+            ?: defaultRelays
+
         val currentStatus = _relayStatus.value
-        val needsReconnect = relayUrls.filter { url ->
+        val needsReconnect = targets.filter { url ->
             val normalizedUrl = normalizeRelayUrl(url)
             val status = currentStatus[normalizedUrl]
             // Reconnect if not connected or not currently connecting
@@ -175,7 +212,14 @@ class NostrClient @Inject constructor() {
         }
 
         if (needsReconnect.isNotEmpty()) {
-            connect(needsReconnect)
+            // Open WebSockets directly without clobbering currentTopology
+            // (which may be richer than the reconnect set).
+            needsReconnect.forEach { url ->
+                if (!relayConnections.containsKey(normalizeRelayUrl(url))) {
+                    connectToRelay(url)
+                }
+            }
+            updateConnectionState()
         }
     }
 
@@ -251,7 +295,12 @@ class NostrClient @Inject constructor() {
     }
 
     /**
-     * Publish an event to all connected relays
+     * Publish an event. Per NIP-65, only relays marked as write (or both)
+     * in the current [currentTopology] receive the event.
+     *
+     * Returns true if the event was queued for sending on at least one
+     * relay. Returns false if no write relays are configured or none are
+     * connected — the caller may want to fall back to a default relay.
      */
     fun publish(event: Event): Boolean {
         val eventJson = event.asJson()
@@ -262,13 +311,13 @@ class NostrClient @Inject constructor() {
 
         var sentToAny = false
         relayConnections.values.forEach { connection ->
-            if (_relayStatus.value[connection.url] == RelayStatus.Connected) {
-                if (connection.webSocket.send(message)) {
-                    sentToAny = true
-                }
+            // NIP-65 outbox routing: skip read-only relays.
+            if (!connection.canWrite) return@forEach
+            if (_relayStatus.value[connection.url] != RelayStatus.Connected) return@forEach
+            if (connection.webSocket.send(message)) {
+                sentToAny = true
             }
         }
-
         return sentToAny
     }
 
@@ -297,7 +346,7 @@ class NostrClient @Inject constructor() {
     }
 
     /**
-     * Get list of currently connected relay URLs
+     * Get list of currently connected relay URLs.
      */
     fun getConnectedRelays(): List<String> {
         return _relayStatus.value
@@ -305,6 +354,12 @@ class NostrClient @Inject constructor() {
             .keys
             .toList()
     }
+
+    /**
+     * Get the currently configured topology. Empty until [connect] or
+     * [connectWithTopology] has been called.
+     */
+    fun getCurrentTopology(): RelayTopology = currentTopology
 
     // ==================== Private Helpers ====================
 
@@ -383,7 +438,8 @@ class NostrClient @Inject constructor() {
 
     private data class RelayConnection(
         val url: String,
-        val webSocket: WebSocket
+        val webSocket: WebSocket,
+        val canWrite: Boolean
     )
 
     sealed class ConnectionState {
