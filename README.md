@@ -18,6 +18,8 @@ Unfiltered is an Instagram-like photo sharing app that runs on Nostr - a decentr
 
 - **Photo Sharing** - Post photos with captions to your followers
 - **Feed** - View photos from accounts you follow
+- **Nearby Feed** - Optionally tag posts with a rough location (~5 km) and browse posts from people near you
+- **Relay List** - Choose which relays you read from and write to (NIP-65)
 - **Profiles** - Customizable profile with avatar, banner, display name, and bio
 - **Search** - Find users by name, npub, or NIP-05 identifier
 - **Reactions** - Like posts from other users
@@ -118,6 +120,7 @@ app/src/main/java/com/nostr/unfiltered/
 | NIP-50 | Search | Relay-based user search |
 | NIP-55 | Android Signer | Amber app integration |
 | NIP-57 | Zaps | Lightning tips to users |
+| NIP-65 | Relay List Metadata | Read/write relay lists (outbox model) |
 | NIP-68 | Picture Events | Photo-first feed format |
 | NIP-94 | File Metadata | Image metadata (dimensions, blurhash, etc.) |
 
@@ -131,6 +134,7 @@ app/src/main/java/com/nostr/unfiltered/
 | 7 | Reactions (likes) | NIP-25 |
 | 20 | Picture posts | NIP-68 |
 | 9734 | Zap request | NIP-57 |
+| 10002 | Relay list metadata | NIP-65 |
 | 23194 | NWC request | NIP-47 |
 | 24242 | Blossom auth | Blossom |
 
